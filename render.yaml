@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: cloudpilot
+    runtime: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: CLOUDPILOT_API_KEY
+        generateValue: true

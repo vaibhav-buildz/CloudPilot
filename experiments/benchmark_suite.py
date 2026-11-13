@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from allocation.cluster import Cluster
+from allocation.config import build_heterogeneous_specs
 from allocation.heuristics import Allocator, BestFit, FirstFit, RoundRobin, WorstFit
 from allocation.simulator import SimulationResult, TraceSimulator
 from allocation.workload import Workload
@@ -45,18 +46,6 @@ class BenchmarkRecord:
     total_runtime_ms: float
     us_per_workload: float
     sla_efficiency_score: float
-
-
-def build_heterogeneous_specs(num_servers: int = 20) -> List[Tuple[str, float, float]]:
-    """Builds a 60% small (8 CPU, 16 GB) / 40% large (32 CPU, 64 GB) heterogeneous cluster."""
-    num_small = int(round(num_servers * 0.6))
-    num_large = max(0, num_servers - num_small)
-    specs: List[Tuple[str, float, float]] = []
-    for i in range(num_small):
-        specs.append((f"small-{i:03d}", 8.0, 16.0))
-    for i in range(num_large):
-        specs.append((f"large-{i:03d}", 32.0, 64.0))
-    return specs
 
 
 def compute_sla_efficiency_score(sim: SimulationResult) -> float:

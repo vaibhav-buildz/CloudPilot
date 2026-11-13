@@ -7,12 +7,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from allocation.cluster import Cluster
 from allocation.exceptions import AllocationError, InvalidResourceError, ReleaseError
+from allocation.config import build_heterogeneous_specs
 from allocation.heuristics import Allocator, BestFit, FirstFit, RoundRobin, WorstFit
 from allocation.resource import CloudServer
 from allocation.simulator import TraceSimulator
 from allocation.workload import Workload
 from datasets.trace_loader import generate_alibaba_style_trace
-from experiments.benchmark_suite import build_heterogeneous_specs, compute_sla_efficiency_score
+from experiments.benchmark_suite import compute_sla_efficiency_score
 from ml.features import bucketize_trace
 from ml.optimizer import PredictiveAllocator, UCBBanditAllocator
 from ml.predictor import EWMAForecaster, LinearARForecaster
@@ -135,6 +136,8 @@ class CloudPilotService:
                 duration=duration,
             )
             allocator = self._allocators[self.active_policy]
+            if hasattr(allocator, "observe"):
+                allocator.observe(workload)
             server: Optional[CloudServer] = allocator.place(workload, self.cluster)
 
             if server is None:
@@ -201,13 +204,17 @@ class CloudPilotService:
         seed: int = 42,
     ) -> Dict[str, Any]:
         with self._lock:
+            if not isinstance(policy, (str, type(None))):
+                raise InvalidResourceError("policy must be a string or None.")
             chosen_policy = (policy or self.active_policy).strip().lower()
             if chosen_policy not in self._allocators:
                 raise InvalidResourceError(
                     f"Unsupported policy '{chosen_policy}'. Available: {self.available_policies}"
                 )
-            if isinstance(num_workloads, bool) or not isinstance(num_workloads, int) or not (1 <= num_workloads <= 5000):
-                raise InvalidResourceError("num_workloads must be an integer between 1 and 5000.")
+            if isinstance(num_workloads, bool) or not isinstance(num_workloads, int) or not (1 <= num_workloads <= 2000):
+                raise InvalidResourceError("num_workloads must be an integer between 1 and 2000.")
+            if isinstance(seed, bool) or not isinstance(seed, (int, float)):
+                raise InvalidResourceError("seed must be an integer.")
 
             sim_cluster = Cluster(self._specs)
             trace = generate_alibaba_style_trace(n=num_workloads, seed=int(seed), horizon_seconds=1800.0)
@@ -228,10 +235,11 @@ class CloudPilotService:
             else:
                 alloc = UCBBanditAllocator()
 
-            simulator = TraceSimulator(cluster=sim_cluster, allocator=alloc)
-            result = simulator.run(trace, reset_cluster=True)
-            data = asdict(result)
-            data["policy_key"] = chosen_policy
-            data["sla_efficiency_score"] = compute_sla_efficiency_score(result)
-            return data
+        # Run simulation OUTSIDE service._lock to prevent blocking live API requests
+        simulator = TraceSimulator(cluster=sim_cluster, allocator=alloc)
+        result = simulator.run(trace, reset_cluster=True)
+        data = asdict(result)
+        data["policy_key"] = chosen_policy
+        data["sla_efficiency_score"] = compute_sla_efficiency_score(result)
+        return data
 

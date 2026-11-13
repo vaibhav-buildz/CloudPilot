@@ -1,7 +1,13 @@
 """Zero-dependency HTTP REST API and live control-plane dashboard for CloudPilot."""
 
 import argparse
+import hmac
 import json
+import os
+import sys
+import threading
+import time
+import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
@@ -9,6 +15,15 @@ from urllib.parse import urlparse
 
 from allocation.exceptions import AllocationError, InvalidResourceError, ReleaseError
 from backend.service import CloudPilotService
+
+MAX_BODY = 64 * 1024  # 64 KB
+SIM_SLOTS = threading.BoundedSemaphore(2)
+
+
+class PayloadTooLargeError(Exception):
+    """Raised when incoming request payload exceeds MAX_BODY."""
+    pass
+
 
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -49,12 +64,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     async function refresh() {
       const res = await fetch('/api/v1/cluster');
       const data = await res.json();
-      document.getElementById('metrics').innerHTML = `
-        <div class="card"><div>Active Policy</div><div class="metric">${data.active_policy}</div></div>
-        <div class="card"><div>CPU Utilization</div><div class="metric">${data.cpu_utilization_pct}%</div></div>
-        <div class="card"><div>RAM Utilization</div><div class="metric">${data.ram_utilization_pct}%</div></div>
-        <div class="card"><div>Active Servers</div><div class="metric">${data.servers_in_use} / ${data.total_servers}</div></div>
-      `;
+      const metricsDiv = document.getElementById('metrics');
+      metricsDiv.textContent = '';
+      const items = [
+        ['Active Policy', data.active_policy],
+        ['CPU Utilization', data.cpu_utilization_pct + '%'],
+        ['RAM Utilization', data.ram_utilization_pct + '%'],
+        ['Active Servers', data.servers_in_use + ' / ' + data.total_servers]
+      ];
+      for (const [title, val] of items) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        const label = document.createElement('div');
+        label.textContent = title;
+        const metric = document.createElement('div');
+        metric.className = 'metric';
+        metric.textContent = String(val);
+        card.appendChild(label);
+        card.appendChild(metric);
+        metricsDiv.appendChild(card);
+      }
       document.getElementById('output').textContent = JSON.stringify(data, null, 2);
     }
     async function runSim() {
@@ -97,14 +126,30 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
     server: CloudPilotHTTPServer
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Suppress noisy stdout logging during automated tests
+        # Suppress default noisy apache stderr logging
         return
+
+    def _log_json(self, method: str, path: str, status: int, duration_ms: float) -> None:
+        """Emits structured JSON access log to stdout."""
+        entry = {
+            "timestamp": round(time.time(), 3),
+            "method": method,
+            "path": path,
+            "status": int(status),
+            "duration_ms": round(duration_ms, 2),
+        }
+        try:
+            sys.stdout.write(json.dumps(entry) + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -113,14 +158,39 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorized(self) -> bool:
+        """Verifies X-API-Key against CLOUDPILOT_API_KEY environment variable if configured."""
+        configured_key = os.environ.get("CLOUDPILOT_API_KEY")
+        if not configured_key:
+            return True
+        header_key = self.headers.get("X-API-Key", "")
+        return hmac.compare_digest(header_key, configured_key)
+
     def _read_json_body(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0:
+        raw_len = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_len)
+        except (ValueError, TypeError):
+            raise InvalidResourceError("Invalid Content-Length.")
+        if length < 0:
+            raise InvalidResourceError("Invalid Content-Length.")
+        if length > MAX_BODY:
+            raise PayloadTooLargeError(
+                f"Payload too large. Maximum allowed size is {MAX_BODY} bytes."
+            )
+        if length == 0:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
+
+        try:
+            raw_bytes = self.rfile.read(length)
+            raw = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InvalidResourceError(f"Malformed UTF-8 payload: {exc}") from exc
+
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -130,25 +200,47 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         return data
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
-        if path == "/" or path == "/index.html":
-            self._send_html(HTTPStatus.OK, DASHBOARD_HTML)
-        elif path == "/api/v1/health":
-            self._send_json(HTTPStatus.OK, self.server.service.get_health())
-        elif path == "/api/v1/cluster":
-            self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
-        else:
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Endpoint '{path}' not found."})
+        t0 = time.perf_counter()
+        status = HTTPStatus.OK
+        try:
+            path = urlparse(self.path).path
+            if path in ("/", "/index.html"):
+                self._send_html(HTTPStatus.OK, DASHBOARD_HTML)
+            elif path == "/healthz":
+                self._send_json(HTTPStatus.OK, {"status": "ok"})
+            elif path == "/api/v1/health":
+                self._send_json(HTTPStatus.OK, self.server.service.get_health())
+            elif path == "/api/v1/cluster":
+                self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
+            else:
+                status = HTTPStatus.NOT_FOUND
+                self._send_json(status, {"error": f"Endpoint '{path}' not found."})
+        except Exception as exc:
+            traceback.print_exc(file=sys.stderr)
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+            self._send_json(status, {"error": "internal"})
+        finally:
+            self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0)
 
     def do_POST(self) -> None:
-        path = urlparse(self.path).path
+        t0 = time.perf_counter()
+        status = HTTPStatus.OK
+        acquired_sim = False
         try:
+            if not self._authorized():
+                status = HTTPStatus.UNAUTHORIZED
+                self._send_json(status, {"error": "Unauthorized."})
+                return
+
+            path = urlparse(self.path).path
             body = self._read_json_body()
+
             if path == "/api/v1/policy":
                 if "policy" not in body:
                     raise InvalidResourceError("Missing required field 'policy'.")
                 res = self.server.service.set_policy(body["policy"])
-                self._send_json(HTTPStatus.OK, res)
+                status = HTTPStatus.OK
+                self._send_json(status, res)
 
             elif path == "/api/v1/allocate":
                 for req_field in ("workload_id", "cpu", "ram"):
@@ -168,29 +260,54 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 if "workload_id" not in body:
                     raise InvalidResourceError("Missing required field 'workload_id'.")
                 res = self.server.service.release_workload(body["workload_id"])
-                self._send_json(HTTPStatus.OK, res)
+                status = HTTPStatus.OK
+                self._send_json(status, res)
 
             elif path == "/api/v1/reset":
                 res = self.server.service.reset_cluster()
-                self._send_json(HTTPStatus.OK, res)
+                status = HTTPStatus.OK
+                self._send_json(status, res)
 
             elif path == "/api/v1/simulate":
+                if not SIM_SLOTS.acquire(blocking=False):
+                    status = HTTPStatus.TOO_MANY_REQUESTS
+                    self._send_json(
+                        status, {"error": "Simulation queue full. Try again shortly."}
+                    )
+                    return
+                acquired_sim = True
                 res = self.server.service.run_simulation(
                     policy=body.get("policy"),
                     num_workloads=body.get("num_workloads", 200),
                     seed=body.get("seed", 42),
                 )
-                self._send_json(HTTPStatus.OK, res)
+                status = HTTPStatus.OK
+                self._send_json(status, res)
 
             else:
-                self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Endpoint '{path}' not found."})
+                status = HTTPStatus.NOT_FOUND
+                self._send_json(status, {"error": f"Endpoint '{path}' not found."})
 
+        except PayloadTooLargeError as exc:
+            status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+            self._send_json(status, {"error": str(exc)})
         except InvalidResourceError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            status = HTTPStatus.BAD_REQUEST
+            self._send_json(status, {"error": str(exc)})
         except ReleaseError as exc:
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            status = HTTPStatus.NOT_FOUND
+            self._send_json(status, {"error": str(exc)})
         except AllocationError as exc:
-            self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
+            status = HTTPStatus.CONFLICT
+            self._send_json(status, {"error": str(exc)})
+        except Exception as exc:
+            traceback.print_exc(file=sys.stderr)
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+            self._send_json(status, {"error": "internal"})
+        finally:
+            if acquired_sim:
+                SIM_SLOTS.release()
+            self._log_json("POST", self.path, status, (time.perf_counter() - t0) * 1000.0)
 
 
 def create_app_server(
@@ -204,8 +321,14 @@ def create_app_server(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run CloudPilot Production Control Plane Server.")
+    default_port = int(os.environ.get("PORT", 8000))
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=default_port,
+        help=f"Bind port (default: {default_port} from PORT env)",
+    )
     args = parser.parse_args()
 
     server = create_app_server(host=args.host, port=args.port)
@@ -221,4 +344,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

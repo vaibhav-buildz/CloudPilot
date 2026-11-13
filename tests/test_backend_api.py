@@ -1,6 +1,8 @@
 """Unit and live HTTP integration tests for CloudPilot Control Plane API."""
 
+import http.client
 import json
+import os
 import threading
 import time
 import unittest
@@ -9,9 +11,11 @@ import urllib.request
 from typing import Any, Dict, Optional, Tuple
 
 from allocation.exceptions import InvalidResourceError, ReleaseError
-from backend.server import create_app_server
+from allocation.workload import Workload
+from backend.server import SIM_SLOTS, create_app_server
 from backend.service import CloudPilotService
 from backend.smoke_test import run_smoke_suite
+from ml.optimizer import PredictiveAllocator, UCBBanditAllocator
 
 
 class TestCloudPilotService(unittest.TestCase):
@@ -162,11 +166,14 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         method: str,
         path: str,
         body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Tuple[int, Any]:
         url = f"http://{self.host}:{self.port}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {"Content-Type": "application/json"} if body is not None else {}
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        req_headers = {"Content-Type": "application/json"} if body is not None else {}
+        if headers:
+            req_headers.update(headers)
+        req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=5.0) as resp:
                 status = resp.status
@@ -297,6 +304,82 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         url = f"http://{self.host}:{self.port}"
         ok = run_smoke_suite(base_url=url)
         self.assertTrue(ok)
+
+    def test_get_healthz(self) -> None:
+        status, data = self._request("GET", "/healthz")
+        self.assertEqual(status, 200)
+        self.assertEqual(data.get("status"), "ok")
+
+    def test_payload_too_large_413(self) -> None:
+        conn = http.client.HTTPConnection(self.host, self.port)
+        big_body = b"{" + b'"k":"v",' * 10000 + b'"end":"val"}'
+        self.assertGreater(len(big_body), 64 * 1024)
+        conn.putrequest("POST", "/api/v1/allocate")
+        conn.putheader("Content-Length", str(len(big_body)))
+        conn.putheader("Content-Type", "application/json")
+        conn.endheaders()
+        conn.send(big_body)
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 413)
+        conn.close()
+
+    def test_invalid_content_length_400(self) -> None:
+        conn = http.client.HTTPConnection(self.host, self.port)
+        conn.putrequest("POST", "/api/v1/allocate")
+        conn.putheader("Content-Length", "not-a-number")
+        conn.endheaders()
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 400)
+        conn.close()
+
+    def test_auth_401_when_api_key_configured(self) -> None:
+        os.environ["CLOUDPILOT_API_KEY"] = "secret-test-token"
+        try:
+            # Missing X-API-Key -> 401
+            st_missing, _ = self._request("POST", "/api/v1/reset", {})
+            self.assertEqual(st_missing, 401)
+
+            # Invalid X-API-Key -> 401
+            st_wrong, _ = self._request(
+                "POST", "/api/v1/reset", {}, headers={"X-API-Key": "wrong-token"}
+            )
+            self.assertEqual(st_wrong, 401)
+
+            # Valid X-API-Key -> 200
+            st_valid, res = self._request(
+                "POST", "/api/v1/reset", {}, headers={"X-API-Key": "secret-test-token"}
+            )
+            self.assertEqual(st_valid, 200)
+            self.assertTrue(res.get("reset"))
+        finally:
+            os.environ.pop("CLOUDPILOT_API_KEY", None)
+
+    def test_simulation_concurrency_429(self) -> None:
+        self.assertTrue(SIM_SLOTS.acquire(blocking=False))
+        self.assertTrue(SIM_SLOTS.acquire(blocking=False))
+        try:
+            status, data = self._request(
+                "POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 20}
+            )
+            self.assertEqual(status, 429)
+            self.assertIn("Simulation queue full", data.get("error", ""))
+        finally:
+            SIM_SLOTS.release()
+            SIM_SLOTS.release()
+
+    def test_ucb_arm_state_consistency(self) -> None:
+        ucb = UCBBanditAllocator()
+        pred_arm = ucb.arms[0]
+        self.assertIsInstance(pred_arm, PredictiveAllocator)
+
+        w1 = Workload("w-arm-consistent", 2.0, 4.0, arrival_time=0.0)
+        ucb.observe(w1)
+        self.assertEqual(pred_arm._last_observed_id, "w-arm-consistent")
+        self.assertEqual(pred_arm._win_arrivals, 1)
+
+        # Re-observing same workload does not duplicate count
+        ucb.observe(w1)
+        self.assertEqual(pred_arm._win_arrivals, 1)
 
 
 if __name__ == "__main__":

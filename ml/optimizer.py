@@ -64,6 +64,7 @@ class PredictiveAllocator(Allocator):
         self._win_ram: float = 0.0
         self._win_heavy: int = 0
         self._latest_forecast: Optional[DemandForecast] = None
+        self._last_observed_id: Optional[str] = None
 
     def reset_state(self) -> None:
         """Resets online streaming history between independent simulation runs."""
@@ -75,9 +76,14 @@ class PredictiveAllocator(Allocator):
         self._win_ram = 0.0
         self._win_heavy = 0
         self._latest_forecast = None
+        self._last_observed_id = None
 
-    def _record_arrival(self, workload: Workload) -> None:
-        """Updates rolling time-window buckets and refreshes the ML demand forecast."""
+    def observe(self, workload: Workload) -> None:
+        """Observes a newly arrived workload and updates rolling demand forecasts."""
+        if self._last_observed_id == workload.workload_id:
+            return
+        self._last_observed_id = workload.workload_id
+
         t = workload.arrival_time
         if self._current_window_idx is None:
             self._current_window_idx = 0
@@ -127,10 +133,9 @@ class PredictiveAllocator(Allocator):
         return min(max(ratio, 0.5), 2.0)
 
     def _select(self, workload: Workload, cluster: Cluster) -> Optional[CloudServer]:
-        if cluster.servers_in_use == 0 and workload.arrival_time == 0.0:
-            self.reset_state()
+        if self._last_observed_id != workload.workload_id:
+            self.observe(workload)
 
-        self._record_arrival(workload)
         candidates = [s for s in cluster.servers if s.can_allocate(workload)]
         if not candidates:
             return None
@@ -246,10 +251,14 @@ class UCBBanditAllocator(Allocator):
         old_val = self._values[context][arm_idx]
         self._values[context][arm_idx] = old_val + (reward - old_val) / n
 
-    def _select(self, workload: Workload, cluster: Cluster) -> Optional[CloudServer]:
-        if cluster.servers_in_use == 0 and workload.arrival_time == 0.0:
-            self.reset_state()
+    def observe(self, workload: Workload) -> None:
+        """Notifies bandit arms (specifically PredictiveAllocator) of workload arrivals."""
+        for arm in self.arms:
+            if hasattr(arm, "observe"):
+                arm.observe(workload)
 
+    def _select(self, workload: Workload, cluster: Cluster) -> Optional[CloudServer]:
+        self.observe(workload)
         context = self._get_context(workload, cluster)
         arm_idx = self._select_arm(context)
         chosen_server = self.arms[arm_idx]._select(workload, cluster)

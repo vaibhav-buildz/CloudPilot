@@ -1,3 +1,12 @@
+---
+title: CloudPilot Control Plane
+emoji: 🚀
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 8000
+---
+
 # CloudPilot: ML-Based Cloud Resource Allocation Simulator
 
 CloudPilot is an extensible research simulator for exploring intelligent cloud compute resource allocation, bin-packing heuristics, and ML-driven predictive scheduling.
@@ -26,6 +35,7 @@ CloudPilot/
 ├── allocation/              # Core domain package
 │   ├── __init__.py          # Public API exports
 │   ├── cluster.py           # Multi-server Cluster fleet manager
+│   ├── config.py            # Heterogeneous server specs and cluster configurations
 │   ├── exceptions.py        # Domain-specific allocation error hierarchy
 │   ├── heuristics.py        # Placement policies (FirstFit, BestFit, WorstFit, RoundRobin)
 │   ├── resource.py          # CloudServer resource model and capacity logic
@@ -41,7 +51,8 @@ CloudPilot/
 │   ├── sample_alibaba_trace.csv # Generated 1,000-workload Alibaba cluster trace
 │   ├── synthetic.py         # Skewed synthetic workload generator
 │   └── trace_loader.py      # Real cloud trace loader (Alibaba / Google Borg schemas)
-├── docs/                    # Research documentation and benchmarks
+├── docs/                    # Research documentation and deployment guides
+│   └── DEPLOY.md            # Multi-cloud deployment guide (Render, HF Spaces, Cloud Run)
 ├── experiments/             # Allocation experiments and evaluation scripts
 │   ├── __init__.py
 │   ├── benchmark_suite.py   # Multi-scenario benchmark engine and latency profiler
@@ -49,6 +60,7 @@ CloudPilot/
 │   ├── run_benchmark_suite.py # Master benchmark runner and report generator
 │   ├── run_ml_prediction.py # ML workload demand forecasting benchmark
 │   ├── run_optimization_benchmark.py # Intelligent ML & RL allocation benchmark
+│   ├── run_statistical_eval.py # Zero-leakage 30-seed statistical evaluation suite
 │   └── run_trace_benchmark.py # Dynamic discrete-event trace replay benchmark
 ├── ml/                      # Machine learning demand forecasting models & optimizers
 │   ├── __init__.py          # Public ML API exports
@@ -57,6 +69,7 @@ CloudPilot/
 │   ├── optimizer.py         # PredictiveAllocator (ML-guided) and UCBBanditAllocator (RL)
 │   └── predictor.py         # Forecasters (Naive, Holt-EWMA, and Ridge LinearAR)
 ├── results/                 # Benchmark output metrics (.json and .csv)
+│   ├── audit_report.md
 │   ├── baseline_metrics.csv
 │   ├── baseline_metrics.json
 │   ├── benchmark_report.md
@@ -66,6 +79,9 @@ CloudPilot/
 │   ├── ml_prediction_metrics.json
 │   ├── optimization_metrics.csv
 │   ├── optimization_metrics.json
+│   ├── statistical_eval.csv
+│   ├── statistical_eval.json
+│   ├── statistical_eval_report.md
 │   ├── trace_metrics.csv
 │   └── trace_metrics.json
 ├── tests/                   # Automated unit and integration test suite
@@ -84,6 +100,8 @@ CloudPilot/
 ├── requirements.txt         # Project dependencies
 ├── Dockerfile               # Production container image definition (python:3.12-slim)
 ├── .dockerignore            # Container build exclusions
+├── render.yaml              # Render Blueprint deployment definition
+├── .github/workflows/ci.yml # Multi-version Python CI pipeline
 └── README.md                # Project documentation
 ```
 
@@ -231,6 +249,15 @@ python experiments/run_benchmark_suite.py
 ```
 
 Results are exported to `results/benchmark_suite.json`, `results/benchmark_suite.csv`, and a formatted Markdown report in `results/benchmark_report.md`.
+
+### Zero-Leakage 30-Seed Statistical Evaluation Suite (Step 8)
+Execute rigorous cross-validation across 20, 50, and 100 heterogeneous servers under low (0.6x), standard (1.0x), and surge (1.5x) offered loads with `LinearARForecaster` fitted strictly on disjoint training seeds (seeds 901–903):
+
+```bash
+python experiments/run_statistical_eval.py
+```
+
+Results are saved to `results/statistical_eval.json`, `results/statistical_eval.csv`, and a formatted Markdown summary in `results/statistical_eval_report.md`.
 
 ---
 

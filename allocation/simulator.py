@@ -62,6 +62,8 @@ class TraceSimulator:
         """
         if reset_cluster:
             self.cluster.reset()
+            if hasattr(self.allocator, "reset_state"):
+                self.allocator.reset_state()
 
         workload_list: List[Workload] = list(workloads)
         if not workload_list:
@@ -119,6 +121,8 @@ class TraceSimulator:
                 if server is not None:
                     server.release(workload)
             else:
+                if hasattr(self.allocator, "observe"):
+                    self.allocator.observe(workload)
                 server = self.allocator.place(workload, self.cluster)
                 if server is not None:
                     placed_count += 1

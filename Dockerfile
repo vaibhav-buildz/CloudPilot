@@ -1,18 +1,16 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PORT=8000
 
 WORKDIR /app
 
-# Create non-root service user
-RUN groupadd -r cloudpilot && useradd -r -g cloudpilot cloudpilot
+RUN useradd -m -u 1000 cloudpilot
 
-# Copy zero-dependency source modules
 COPY allocation/ ./allocation/
 COPY datasets/ ./datasets/
 COPY ml/ ./ml/
-COPY experiments/ ./experiments/
 COPY backend/ ./backend/
 COPY main.py README.md ./
 
@@ -21,9 +19,7 @@ USER cloudpilot
 
 EXPOSE 8000
 
-# Pure-Python stdlib healthcheck (no curl/wget required in slim image)
-HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-  CMD python -c "import urllib.request, sys; r = urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2); sys.exit(0 if r.status == 200 else 1)"
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s \
+  CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/v1/health' % os.environ.get('PORT', '8000'), timeout=2)"]
 
-CMD ["python", "-m", "backend.server", "--host", "0.0.0.0", "--port", "8000"]
-
+CMD ["python", "-m", "backend.server", "--host", "0.0.0.0"]
