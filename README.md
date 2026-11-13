@@ -31,7 +31,10 @@ CloudPilot/
 │   ├── resource.py          # CloudServer resource model and capacity logic
 │   ├── simulator.py         # Discrete-event TraceSimulator and SimulationResult
 │   └── workload.py          # Workload model with temporal dynamics (arrival & duration)
-├── backend/                 # Future API / backend services placeholder
+├── backend/                 # Production HTTP Control Plane & Live Dashboard
+│   ├── __init__.py          # Public backend exports
+│   ├── server.py            # Zero-dependency ThreadingHTTPServer & REST API
+│   └── service.py           # Thread-safe CloudPilotService fleet manager
 ├── datasets/                # Workload datasets and trace loaders
 │   ├── __init__.py
 │   ├── sample_alibaba_trace.csv # Generated 1,000-workload Alibaba cluster trace
@@ -66,6 +69,7 @@ CloudPilot/
 │   └── trace_metrics.json
 ├── tests/                   # Automated unit and integration test suite
 │   ├── __init__.py
+│   ├── test_backend_api.py  # Control plane API unit & live HTTP integration tests
 │   ├── test_benchmark_suite.py # Benchmark suite runner & latency telemetry tests
 │   ├── test_cluster.py      # Cluster aggregate metrics and lifecycle tests
 │   ├── test_heuristics.py   # Heuristic placement and SLA constraint tests
@@ -227,7 +231,32 @@ Results are exported to `results/benchmark_suite.json`, `results/benchmark_suite
 
 ---
 
-## 6. How to Execute Tests
+## 6. Production Control-Plane API & Live Dashboard (Step 7)
+
+CloudPilot includes a thread-safe HTTP REST API server and embedded dark-theme telemetry dashboard built purely on the Python standard library (`http.server` and `threading`), requiring zero third-party web frameworks.
+
+### Launching the Control Plane Server
+```bash
+# Launch control plane server on default host (127.0.0.1:8000)
+python -m backend.server --port 8000
+```
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in any web browser to view the real-time cluster telemetry dashboard, switch placement policies, and trigger on-demand trace simulations.
+
+### REST API Endpoints
+| Method | Endpoint | Description | Status Code |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/` | Embedded Live Dark-Theme Control Plane Dashboard | `200 OK` |
+| `GET` | `/api/v1/health` | Service uptime, active policy, and server count | `200 OK` |
+| `GET` | `/api/v1/cluster` | Real-time CPU/RAM utilization and server status | `200 OK` |
+| `POST` | `/api/v1/policy` | Dynamically switch policy (`{"policy": "predictive_ar"}`) | `200 OK`, `400 Bad Request` |
+| `POST` | `/api/v1/allocate` | Allocate workload (`{"workload_id": "job-1", "cpu": 4, "ram": 8}`) | `201 Created`, `409 Conflict`, `400 Bad Request` |
+| `POST` | `/api/v1/release` | Release workload (`{"workload_id": "job-1"}`) | `200 OK`, `404 Not Found` |
+| `POST` | `/api/v1/reset` | Reset cluster fleet to idle empty state | `200 OK` |
+| `POST` | `/api/v1/simulate` | Run on-demand trace simulation (`{"policy": "...", "num_workloads": 200}`) | `200 OK`, `400 Bad Request` |
+
+---
+
+## 7. How to Execute Tests
 
 The test suite runs using either Python's built-in `unittest` runner or `pytest`.
 
@@ -243,7 +272,7 @@ python -m pytest -v
 
 ---
 
-## 7. Roadmap
+## 8. Roadmap
 
 - [x] Multi-server placement heuristics (First-Fit, Best-Fit, Worst-Fit, Round-Robin).
 - [x] Synthetic workload generation and baseline benchmarks.
@@ -251,5 +280,6 @@ python -m pytest -v
 - [x] Machine learning model integration for predictive workload sizing (Naive, Holt-EWMA, and Ridge LinearAR).
 - [x] Intelligent resource optimization with PredictiveAllocator (whale protection, skew alignment) & Contextual UCB Multi-Armed Bandit meta-scheduling.
 - [x] Comprehensive performance benchmarking, latency profiling, and multi-scenario stress testing (Step 6).
+- [x] Production HTTP Control-Plane API & Live Dashboard with dynamic policy switching and on-demand trace simulation (Step 7).
 - [ ] Multi-cluster federation and dynamic predictive autoscaling.
 
