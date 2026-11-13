@@ -1,0 +1,6 @@
+# CloudPilot: Core dependencies
+# The simulator core uses standard library only to remain lightweight and modular.
+
+# Testing & Development (optional)
+pytest>=7.4.0
+

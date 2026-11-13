@@ -1,0 +1,164 @@
+# CloudPilot: ML-Based Cloud Resource Allocation Simulator
+
+CloudPilot is an extensible research simulator for exploring intelligent cloud compute resource allocation, bin-packing heuristics, and ML-driven predictive scheduling.
+
+> **Note**: This project is currently a discrete resource allocation simulation engine, not a live cloud deployment. It models compute nodes, workloads, capacity constraints, and lifecycle events without requiring real cloud infrastructure or third-party orchestrators.
+
+---
+
+## 1. Project Overview
+
+Cloud resource management requires allocating heterogeneous compute workloads (demanding varying amounts of CPU and RAM) across a pool of servers while optimizing utilization and avoiding resource exhaustion. CloudPilot provides the core domain abstractions and verification mechanisms necessary to simulate and benchmark allocation policies, spanning:
+
+- **Resource Modeling**: Modeling servers with finite CPU and RAM capacities.
+- **Workload Modeling**: Modeling discrete jobs/services with explicit compute demands.
+- **Atomic Operations**: Ensuring state consistency across allocations and releases.
+- **Extensible Architecture**: Structured for future integration of heuristic algorithms (e.g., First-Fit, Best-Fit) and machine learning models (e.g., predictive autoscaling, reinforcement learning allocators).
+
+---
+
+## 2. Architecture & Design Decisions
+
+### Directory Structure
+
+```
+CloudPilot/
+├── allocation/              # Core domain package
+│   ├── __init__.py          # Public API exports
+│   ├── exceptions.py        # Domain-specific allocation error hierarchy
+│   ├── resource.py          # CloudServer resource model and capacity logic
+│   └── workload.py          # Workload model and demand specification
+├── backend/                 # Future API / backend services placeholder
+├── datasets/                # Future workload trace datasets placeholder
+├── docs/                    # Research documentation and benchmarks
+├── experiments/             # Allocation experiments and evaluation scripts
+├── ml/                      # Future ML/RL models and predictors placeholder
+├── tests/                   # Automated unit and integration test suite
+│   ├── __init__.py
+│   ├── test_resource.py     # CloudServer test cases (capacity, atomic safety)
+│   └── test_workload.py     # Workload test cases (validation, equality)
+├── main.py                  # Simulator entry point and demonstration
+├── requirements.txt         # Project dependencies
+└── README.md                # Project documentation
+```
+
+### Architectural Decisions
+
+1. **Atomic State Guarantees**:
+   When allocating or releasing multi-dimensional resources (CPU and RAM), all constraints are validated *prior* to modifying server state. If either CPU or RAM exceeds capacity or bounds, the operation fails and leaves the server in its exact prior state.
+2. **Polymorphic Allocation Interfaces**:
+   `CloudServer.allocate()` and `CloudServer.release()` support both explicit numeric amounts (`cpu`, `ram`) and `Workload` domain objects, enabling flexibility for algorithm implementations.
+3. **Floating-Point Precision Safeguards**:
+   Resource calculations incorporate floating-point epsilon tolerances (`1e-9`) to prevent precision drift (e.g., `0.30000000000000004 > 0.3`) when allocating fractional compute cores.
+4. **Zero-Dependency Core**:
+   The simulator core relies purely on the Python standard library. External dependencies are reserved for developer tooling (such as `pytest`).
+5. **Domain Exception Hierarchy**:
+   All custom exceptions inherit from `AllocationError` and standard `ValueError` to facilitate standard Python error handling while allowing granular inspection (`InsufficientCPUError`, `InsufficientRAMError`, `ReleaseError`).
+
+---
+
+## 3. Setup Instructions
+
+### Prerequisites
+- Python 3.10+ (tested on Python 3.11)
+
+### Setup Virtual Environment
+
+```bash
+# Clone the repository (if not already local)
+git clone https://github.com/vaibhav-buildz/CloudPilot.git
+cd CloudPilot
+
+# Create and activate a virtual environment
+python -m venv .venv
+
+# On Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# On Windows (CMD):
+.venv\Scripts\activate.bat
+# On Linux / macOS:
+source .venv/bin/activate
+
+# Install development dependencies
+pip install -r requirements.txt
+```
+
+---
+
+## 4. How to Run the Simulator
+
+Run the demonstration script to view server provisioning, workload allocation, constraint enforcement, and resource deallocation:
+
+```bash
+# Using python executable
+python main.py
+
+# Or via virtual environment directly (Windows)
+.venv\Scripts\python.exe main.py
+```
+
+### Sample Output
+
+```
+======================================================================
+ CloudPilot - Cloud Resource Allocation Simulator
+======================================================================
+
+--- 1. Initial Server State (Idle) ---
+  Server-Alpha    | CPU:  0.0/ 8.0 vCPU (  0.0%) | RAM:  0.0/16.0 GB (  0.0%) | Available: 8.0 vCPU, 16.0 GB
+  Server-Beta     | CPU:  0.0/16.0 vCPU (  0.0%) | RAM:  0.0/32.0 GB (  0.0%) | Available: 16.0 vCPU, 32.0 GB
+
+--- 2. Sample Workloads Created ---
+  Workload[WL-Web-Frontend] (CPU: 4, RAM: 8GB)
+  Workload[WL-Database] (CPU: 8, RAM: 16GB)
+  Workload[WL-Analytics-Worker] (CPU: 4, RAM: 8GB)
+
+--- 3. Allocating Workloads ---
+  Allocating WL-Web-Frontend -> Server-Alpha...
+  Allocating WL-Database -> Server-Beta...
+  Allocating WL-Analytics-Worker -> Server-Beta...
+
+  Attempting to allocate oversized WL-Oversized (8 vCPU) -> Server-Alpha (available: 4 vCPU)...
+  [Rejected Expectedly] Insufficient CPU on server 'Server-Alpha': requested 8, available 4 (total 8)
+
+--- 4. Server Utilization Post-Allocation ---
+  Server-Alpha    | CPU:  4.0/ 8.0 vCPU ( 50.0%) | RAM:  8.0/16.0 GB ( 50.0%) | Available: 4.0 vCPU, 8.0 GB
+  Server-Beta     | CPU: 12.0/16.0 vCPU ( 75.0%) | RAM: 24.0/32.0 GB ( 75.0%) | Available: 4.0 vCPU, 8.0 GB
+
+--- 5. Releasing Resources ---
+  Releasing WL-Web-Frontend from Server-Alpha...
+  Releasing WL-Analytics-Worker from Server-Beta...
+
+--- 6. Server Utilization Post-Release ---
+  Server-Alpha    | CPU:  0.0/ 8.0 vCPU (  0.0%) | RAM:  0.0/16.0 GB (  0.0%) | Available: 8.0 vCPU, 16.0 GB
+  Server-Beta     | CPU:  8.0/16.0 vCPU ( 50.0%) | RAM: 16.0/32.0 GB ( 50.0%) | Available: 8.0 vCPU, 16.0 GB
+
+======================================================================
+ Simulation completed successfully.
+======================================================================
+```
+
+---
+
+## 5. How to Execute Tests
+
+The test suite runs using either Python's built-in `unittest` runner or `pytest`.
+
+### Running with Python's built-in `unittest` (Zero Dependencies)
+```bash
+python -m unittest discover -s tests -v
+```
+
+### Running with `pytest`
+```bash
+python -m pytest -v
+```
+
+---
+
+## 6. Roadmap
+
+- [ ] Multi-server placement heuristics (First-Fit, Best-Fit, Worst-Fit).
+- [ ] Synthetic and real-world trace replay (e.g., Azure Public Dataset, Google Cluster Traces).
+- [ ] Machine learning model integration for predictive workload sizing and dynamic scaling.
+
