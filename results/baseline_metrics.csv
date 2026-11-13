@@ -1,0 +1,7 @@
+algorithm,placed,rejected,rejection_rate_pct,cpu_util_pct,ram_util_pct,servers_in_use,load_imbalance
+First-Fit,82,418,83.6,65.63,98.92,20,6.65
+Best-Fit,84,416,83.2,65.32,98.87,20,6.66
+Worst-Fit,112,388,77.6,69.26,99.17,20,4.77
+Round-Robin,101,399,79.8,66.98,99.11,20,6.22
+First-Fit Decreasing,34,466,93.2,63.98,98.9,20,10.05
+Best-Fit Decreasing,34,466,93.2,63.98,98.9,20,10.05

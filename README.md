@@ -25,17 +25,27 @@ Cloud resource management requires allocating heterogeneous compute workloads (d
 CloudPilot/
 ├── allocation/              # Core domain package
 │   ├── __init__.py          # Public API exports
+│   ├── cluster.py           # Multi-server Cluster fleet manager
 │   ├── exceptions.py        # Domain-specific allocation error hierarchy
+│   ├── heuristics.py        # Placement policies (FirstFit, BestFit, WorstFit, RoundRobin)
 │   ├── resource.py          # CloudServer resource model and capacity logic
 │   └── workload.py          # Workload model and demand specification
 ├── backend/                 # Future API / backend services placeholder
-├── datasets/                # Future workload trace datasets placeholder
+├── datasets/                # Workload datasets and synthetic trace generators
+│   ├── __init__.py
+│   └── synthetic.py         # Skewed synthetic workload generator
 ├── docs/                    # Research documentation and benchmarks
 ├── experiments/             # Allocation experiments and evaluation scripts
+│   ├── __init__.py
+│   └── run_baselines.py     # Benchmark suite for traditional baseline heuristics
 ├── ml/                      # Future ML/RL models and predictors placeholder
+├── results/                 # Benchmark output metrics (.json and .csv)
 ├── tests/                   # Automated unit and integration test suite
 │   ├── __init__.py
+│   ├── test_cluster.py      # Cluster aggregate metrics and lifecycle tests
+│   ├── test_heuristics.py   # Heuristic placement and SLA constraint tests
 │   ├── test_resource.py     # CloudServer test cases (capacity, atomic safety)
+│   ├── test_synthetic.py    # Workload generator determinism and bounds tests
 │   └── test_workload.py     # Workload test cases (validation, equality)
 ├── main.py                  # Simulator entry point and demonstration
 ├── requirements.txt         # Project dependencies
@@ -140,7 +150,19 @@ python main.py
 
 ---
 
-## 5. How to Execute Tests
+## 5. How to Run Baseline Experiments
+
+Execute the baseline benchmarking suite (comparing First-Fit, Best-Fit, Worst-Fit, Round-Robin, First-Fit Decreasing, and Best-Fit Decreasing across 500 workloads):
+
+```bash
+python experiments/run_baselines.py
+```
+
+Results are printed to stdout and saved in `results/baseline_metrics.json` and `results/baseline_metrics.csv`.
+
+---
+
+## 6. How to Execute Tests
 
 The test suite runs using either Python's built-in `unittest` runner or `pytest`.
 
@@ -156,9 +178,10 @@ python -m pytest -v
 
 ---
 
-## 6. Roadmap
+## 7. Roadmap
 
-- [ ] Multi-server placement heuristics (First-Fit, Best-Fit, Worst-Fit).
-- [ ] Synthetic and real-world trace replay (e.g., Azure Public Dataset, Google Cluster Traces).
+- [x] Multi-server placement heuristics (First-Fit, Best-Fit, Worst-Fit, Round-Robin).
+- [x] Synthetic workload generation and baseline benchmarks.
+- [ ] Real-world trace replay (e.g., Azure Public Dataset, Google Cluster Traces).
 - [ ] Machine learning model integration for predictive workload sizing and dynamic scaling.
 

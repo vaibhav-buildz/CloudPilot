@@ -1,0 +1,62 @@
+[
+  {
+    "algorithm": "First-Fit",
+    "placed": 82,
+    "rejected": 418,
+    "rejection_rate_pct": 83.6,
+    "cpu_util_pct": 65.63,
+    "ram_util_pct": 98.92,
+    "servers_in_use": 20,
+    "load_imbalance": 6.65
+  },
+  {
+    "algorithm": "Best-Fit",
+    "placed": 84,
+    "rejected": 416,
+    "rejection_rate_pct": 83.2,
+    "cpu_util_pct": 65.32,
+    "ram_util_pct": 98.87,
+    "servers_in_use": 20,
+    "load_imbalance": 6.66
+  },
+  {
+    "algorithm": "Worst-Fit",
+    "placed": 112,
+    "rejected": 388,
+    "rejection_rate_pct": 77.6,
+    "cpu_util_pct": 69.26,
+    "ram_util_pct": 99.17,
+    "servers_in_use": 20,
+    "load_imbalance": 4.77
+  },
+  {
+    "algorithm": "Round-Robin",
+    "placed": 101,
+    "rejected": 399,
+    "rejection_rate_pct": 79.8,
+    "cpu_util_pct": 66.98,
+    "ram_util_pct": 99.11,
+    "servers_in_use": 20,
+    "load_imbalance": 6.22
+  },
+  {
+    "algorithm": "First-Fit Decreasing",
+    "placed": 34,
+    "rejected": 466,
+    "rejection_rate_pct": 93.2,
+    "cpu_util_pct": 63.98,
+    "ram_util_pct": 98.9,
+    "servers_in_use": 20,
+    "load_imbalance": 10.05
+  },
+  {
+    "algorithm": "Best-Fit Decreasing",
+    "placed": 34,
+    "rejected": 466,
+    "rejection_rate_pct": 93.2,
+    "cpu_util_pct": 63.98,
+    "ram_util_pct": 98.9,
+    "servers_in_use": 20,
+    "load_imbalance": 10.05
+  }
+]
