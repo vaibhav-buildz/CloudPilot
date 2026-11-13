@@ -1,4 +1,4 @@
-"""CloudPilot Machine Learning Package for Workload Demand Forecasting."""
+"""CloudPilot Machine Learning Package for Workload Demand Forecasting and Optimization."""
 
 from ml.features import (
     TimeWindowBucket,
@@ -8,6 +8,7 @@ from ml.features import (
     extract_lag_features,
 )
 from ml.metrics import mae, r2_score, rmse, smape
+from ml.optimizer import PredictiveAllocator, UCBBanditAllocator
 from ml.predictor import (
     DemandForecast,
     DemandPredictor,
@@ -31,5 +32,6 @@ __all__ = [
     "NaiveLastValuePredictor",
     "EWMAForecaster",
     "LinearARForecaster",
+    "PredictiveAllocator",
+    "UCBBanditAllocator",
 ]
-

@@ -42,17 +42,21 @@ CloudPilot/
 │   ├── __init__.py
 │   ├── run_baselines.py     # Static benchmark suite for baseline heuristics
 │   ├── run_ml_prediction.py # ML workload demand forecasting benchmark
+│   ├── run_optimization_benchmark.py # Intelligent ML & RL allocation benchmark
 │   └── run_trace_benchmark.py # Dynamic discrete-event trace replay benchmark
-├── ml/                      # Machine learning demand forecasting models
+├── ml/                      # Machine learning demand forecasting models & optimizers
 │   ├── __init__.py          # Public ML API exports
 │   ├── features.py          # TimeWindowBucket and lag/diurnal feature engineering
 │   ├── metrics.py           # Regression metrics (MAE, RMSE, sMAPE, R2)
+│   ├── optimizer.py         # PredictiveAllocator (ML-guided) and UCBBanditAllocator (RL)
 │   └── predictor.py         # Forecasters (Naive, Holt-EWMA, and Ridge LinearAR)
 ├── results/                 # Benchmark output metrics (.json and .csv)
 │   ├── baseline_metrics.csv
 │   ├── baseline_metrics.json
 │   ├── ml_prediction_metrics.csv
 │   ├── ml_prediction_metrics.json
+│   ├── optimization_metrics.csv
+│   ├── optimization_metrics.json
 │   ├── trace_metrics.csv
 │   └── trace_metrics.json
 ├── tests/                   # Automated unit and integration test suite
@@ -60,6 +64,7 @@ CloudPilot/
 │   ├── test_cluster.py      # Cluster aggregate metrics and lifecycle tests
 │   ├── test_heuristics.py   # Heuristic placement and SLA constraint tests
 │   ├── test_ml_prediction.py # ML feature engineering, forecasters, and metrics tests
+│   ├── test_optimizer.py    # PredictiveAllocator & UCBBanditAllocator tests
 │   ├── test_resource.py     # CloudServer test cases (capacity, atomic safety)
 │   ├── test_synthetic.py    # Workload generator determinism and bounds tests
 │   ├── test_trace_simulator.py # Discrete-event simulator & trace loader tests
@@ -196,6 +201,15 @@ python experiments/run_ml_prediction.py
 
 Results are printed to stdout and saved in `results/ml_prediction_metrics.json` and `results/ml_prediction_metrics.csv`.
 
+### Intelligent ML & RL Resource Optimization Benchmark (Step 5)
+Benchmark `PredictiveAllocator` (with EWMA & LinearAR) and `UCBBanditAllocator` (contextual UCB1 multi-armed bandit meta-scheduler) head-to-head against traditional baselines on the Alibaba cluster trace:
+
+```bash
+python experiments/run_optimization_benchmark.py
+```
+
+Results are printed to stdout and saved in `results/optimization_metrics.json` and `results/optimization_metrics.csv`.
+
 ---
 
 ## 6. How to Execute Tests
@@ -220,5 +234,6 @@ python -m pytest -v
 - [x] Synthetic workload generation and baseline benchmarks.
 - [x] Real-world trace replay (Alibaba Cluster Trace / Google Borg schemas and discrete-event TraceSimulator).
 - [x] Machine learning model integration for predictive workload sizing (Naive, Holt-EWMA, and Ridge LinearAR).
+- [x] Intelligent resource optimization with PredictiveAllocator (whale protection, skew alignment) & Contextual UCB Multi-Armed Bandit meta-scheduling.
 - [ ] Reinforcement learning and predictive dynamic auto-scaler for multi-cluster sizing.
 
