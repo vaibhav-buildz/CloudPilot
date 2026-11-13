@@ -1,7 +1,7 @@
 """CloudPilot Resource Allocation Engine.
 
 Provides core abstractions for modeling cloud compute resources, workloads, clusters,
-and heuristic placement algorithms.
+heuristic placement algorithms, and discrete-event trace simulation.
 """
 
 from allocation.cluster import Cluster
@@ -21,6 +21,7 @@ from allocation.heuristics import (
     WorstFit,
 )
 from allocation.resource import CloudServer
+from allocation.simulator import SimulationResult, TraceSimulator
 from allocation.workload import Workload
 
 __all__ = [
@@ -32,6 +33,8 @@ __all__ = [
     "BestFit",
     "WorstFit",
     "RoundRobin",
+    "TraceSimulator",
+    "SimulationResult",
     "AllocationError",
     "InvalidResourceError",
     "InsufficientCapacityError",

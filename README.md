@@ -29,23 +29,40 @@ CloudPilot/
 │   ├── exceptions.py        # Domain-specific allocation error hierarchy
 │   ├── heuristics.py        # Placement policies (FirstFit, BestFit, WorstFit, RoundRobin)
 │   ├── resource.py          # CloudServer resource model and capacity logic
-│   └── workload.py          # Workload model and demand specification
+│   ├── simulator.py         # Discrete-event TraceSimulator and SimulationResult
+│   └── workload.py          # Workload model with temporal dynamics (arrival & duration)
 ├── backend/                 # Future API / backend services placeholder
-├── datasets/                # Workload datasets and synthetic trace generators
+├── datasets/                # Workload datasets and trace loaders
 │   ├── __init__.py
-│   └── synthetic.py         # Skewed synthetic workload generator
+│   ├── sample_alibaba_trace.csv # Generated 1,000-workload Alibaba cluster trace
+│   ├── synthetic.py         # Skewed synthetic workload generator
+│   └── trace_loader.py      # Real cloud trace loader (Alibaba / Google Borg schemas)
 ├── docs/                    # Research documentation and benchmarks
 ├── experiments/             # Allocation experiments and evaluation scripts
 │   ├── __init__.py
-│   └── run_baselines.py     # Benchmark suite for traditional baseline heuristics
-├── ml/                      # Future ML/RL models and predictors placeholder
+│   ├── run_baselines.py     # Static benchmark suite for baseline heuristics
+│   ├── run_ml_prediction.py # ML workload demand forecasting benchmark
+│   └── run_trace_benchmark.py # Dynamic discrete-event trace replay benchmark
+├── ml/                      # Machine learning demand forecasting models
+│   ├── __init__.py          # Public ML API exports
+│   ├── features.py          # TimeWindowBucket and lag/diurnal feature engineering
+│   ├── metrics.py           # Regression metrics (MAE, RMSE, sMAPE, R2)
+│   └── predictor.py         # Forecasters (Naive, Holt-EWMA, and Ridge LinearAR)
 ├── results/                 # Benchmark output metrics (.json and .csv)
+│   ├── baseline_metrics.csv
+│   ├── baseline_metrics.json
+│   ├── ml_prediction_metrics.csv
+│   ├── ml_prediction_metrics.json
+│   ├── trace_metrics.csv
+│   └── trace_metrics.json
 ├── tests/                   # Automated unit and integration test suite
 │   ├── __init__.py
 │   ├── test_cluster.py      # Cluster aggregate metrics and lifecycle tests
 │   ├── test_heuristics.py   # Heuristic placement and SLA constraint tests
+│   ├── test_ml_prediction.py # ML feature engineering, forecasters, and metrics tests
 │   ├── test_resource.py     # CloudServer test cases (capacity, atomic safety)
 │   ├── test_synthetic.py    # Workload generator determinism and bounds tests
+│   ├── test_trace_simulator.py # Discrete-event simulator & trace loader tests
 │   └── test_workload.py     # Workload test cases (validation, equality)
 ├── main.py                  # Simulator entry point and demonstration
 ├── requirements.txt         # Project dependencies
@@ -152,13 +169,32 @@ python main.py
 
 ## 5. How to Run Baseline Experiments
 
-Execute the baseline benchmarking suite (comparing First-Fit, Best-Fit, Worst-Fit, Round-Robin, First-Fit Decreasing, and Best-Fit Decreasing across 500 workloads):
+### Static Heuristic Benchmark
+Execute the static baseline benchmarking suite (comparing First-Fit, Best-Fit, Worst-Fit, Round-Robin, First-Fit Decreasing, and Best-Fit Decreasing across 500 workloads):
 
 ```bash
 python experiments/run_baselines.py
 ```
 
 Results are printed to stdout and saved in `results/baseline_metrics.json` and `results/baseline_metrics.csv`.
+
+### Dynamic Trace Replay Benchmark (Step 3)
+Execute the discrete-event trace simulator across 1,000 Alibaba-style workloads (evaluating arrival timestamps, runtime durations, dynamic departures, and server capacity recycling):
+
+```bash
+python experiments/run_trace_benchmark.py
+```
+
+Results are printed to stdout and saved in `results/trace_metrics.json` and `results/trace_metrics.csv`.
+
+### ML Workload Demand Forecasting Benchmark (Step 4)
+Evaluate time-window aggregation (30s buckets) and walk-forward prediction comparing Naive Last-Value, EWMA (Holt Trend), and Multivariate Ridge Linear Autoregression:
+
+```bash
+python experiments/run_ml_prediction.py
+```
+
+Results are printed to stdout and saved in `results/ml_prediction_metrics.json` and `results/ml_prediction_metrics.csv`.
 
 ---
 
@@ -182,6 +218,7 @@ python -m pytest -v
 
 - [x] Multi-server placement heuristics (First-Fit, Best-Fit, Worst-Fit, Round-Robin).
 - [x] Synthetic workload generation and baseline benchmarks.
-- [ ] Real-world trace replay (e.g., Azure Public Dataset, Google Cluster Traces).
-- [ ] Machine learning model integration for predictive workload sizing and dynamic scaling.
+- [x] Real-world trace replay (Alibaba Cluster Trace / Google Borg schemas and discrete-event TraceSimulator).
+- [x] Machine learning model integration for predictive workload sizing (Naive, Holt-EWMA, and Ridge LinearAR).
+- [ ] Reinforcement learning and predictive dynamic auto-scaler for multi-cluster sizing.
 

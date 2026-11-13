@@ -1,0 +1,41 @@
+[
+  {
+    "model": "Naive Last-Value",
+    "test_windows": 39,
+    "cpu_mae": 10.795,
+    "cpu_rmse": 13.56,
+    "cpu_smape_pct": 92.56,
+    "cpu_r2": -0.079,
+    "ram_mae": 34.221,
+    "ram_rmse": 43.271,
+    "ram_smape_pct": 101.23,
+    "ram_r2": -0.244,
+    "arrivals_mae": 2.436
+  },
+  {
+    "model": "EWMA (Holt Trend)",
+    "test_windows": 39,
+    "cpu_mae": 9.224,
+    "cpu_rmse": 11.466,
+    "cpu_smape_pct": 82.84,
+    "cpu_r2": 0.228,
+    "ram_mae": 28.73,
+    "ram_rmse": 36.011,
+    "ram_smape_pct": 89.2,
+    "ram_r2": 0.138,
+    "arrivals_mae": 1.949
+  },
+  {
+    "model": "Linear AR (Ridge)",
+    "test_windows": 39,
+    "cpu_mae": 9.434,
+    "cpu_rmse": 11.64,
+    "cpu_smape_pct": 78.42,
+    "cpu_r2": 0.205,
+    "ram_mae": 28.639,
+    "ram_rmse": 35.921,
+    "ram_smape_pct": 85.26,
+    "ram_r2": 0.142,
+    "arrivals_mae": 1.919
+  }
+]
