@@ -15,7 +15,8 @@ from ml.predictor import DemandForecast, DemandPredictor, EWMAForecaster
 
 class PredictiveAllocator(Allocator):
     """ML-guided multi-objective allocator combining demand forecasting, tier-aware
-    headroom reservation, cross-dimensional CPU/RAM skew alignment, and server consolidation.
+    headroom reservation, cross-dimensional CPU/RAM skew alignment, anti-sliver guards,
+    and adaptive power consolidation.
 
     Scheduling Mechanics:
     1. Streaming Forecast Update: Aggregates arriving workloads into rolling time windows
@@ -25,20 +26,23 @@ class PredictiveAllocator(Allocator):
        forecaster predicts an incoming resource burst.
     3. Cross-Dimensional Skew Alignment: Minimizes `|rem_cpu_ratio - rem_ram_ratio|` after
        placement so RAM-intensive jobs pair with CPU-intensive jobs instead of stranding cores.
-    4. Adaptive Consolidation: Penalizes waking up completely idle servers during low-demand
-       windows to minimize active server count (`Peak Srv`), while relaxing consolidation
-       during predicted bursts to prevent bottlenecking.
+    4. Anti-Sliver Guard: Penalizes leaving unusable RAM slivers (0.15 to 1.5 GB) that cannot
+       fit future requests unless the placement nearly fills the server.
+    5. Sequential Turnover Preference: Preserves fast resource turnover on earlier servers.
     """
 
     def __init__(
         self,
         predictor: Optional[DemandPredictor] = None,
         window_size: float = 30.0,
-        small_cpu_threshold: float = 8.0,
-        small_ram_threshold: float = 16.0,
-        skew_weight: float = 1.35,
-        packing_weight: float = 0.65,
+        small_cpu_threshold: float = 4.0,
+        small_ram_threshold: float = 12.0,
+        skew_weight: float = 0.10,
+        packing_weight: float = 0.20,
         idle_wakeup_penalty: float = 0.35,
+        sliver_penalty: float = 0.45,
+        tier_penalty_weight: float = 1.25,
+        order_bias_weight: float = 0.40,
     ) -> None:
         self.predictor: DemandPredictor = predictor if predictor is not None else EWMAForecaster()
         self.window_size = float(window_size)
@@ -47,6 +51,9 @@ class PredictiveAllocator(Allocator):
         self.skew_weight = float(skew_weight)
         self.packing_weight = float(packing_weight)
         self.idle_wakeup_penalty = float(idle_wakeup_penalty)
+        self.sliver_penalty = float(sliver_penalty)
+        self.tier_penalty_weight = float(tier_penalty_weight)
+        self.order_bias_weight = float(order_bias_weight)
 
         # Online streaming state
         self._completed_buckets: List[TimeWindowBucket] = []
@@ -137,32 +144,37 @@ class PredictiveAllocator(Allocator):
         best_server: Optional[CloudServer] = None
         best_score = float("inf")
 
-        for s in candidates:
-            rem_cpu_norm = (s.available_cpu() - workload.cpu) / s.total_cpu
-            rem_ram_norm = (s.available_ram() - workload.ram) / s.total_ram
+        for idx, s in enumerate(candidates):
+            rem_cpu = s.available_cpu() - workload.cpu
+            rem_ram = s.available_ram() - workload.ram
+            rem_cpu_norm = rem_cpu / s.total_cpu
+            rem_ram_norm = rem_ram / s.total_ram
 
-            # 1. Tightness of fit (0 to 2)
-            leftover_norm = rem_cpu_norm + rem_ram_norm
-
-            # 2. Cross-dimensional balance (0 to 1): lower means CPU and RAM deplete evenly
+            # 1. Cross-dimensional skew: keep CPU% and RAM% aligned
             skew = abs(rem_cpu_norm - rem_ram_norm)
 
-            # 3. Tier-aware reservation: keep small jobs off large nodes so batch jobs fit
-            is_large_server = (
-                s.total_cpu > self.small_cpu_threshold
-                or s.total_ram > self.small_ram_threshold
+            # 2. Anti-sliver guard: penalize leaving an unusable RAM sliver (0.15 to 1.5 GB)
+            sliver_pen = (
+                self.sliver_penalty if (0.15 < rem_ram < 1.5) else 0.0
             )
-            tier_penalty = (4.0 * burst_factor) if (is_small_job and is_large_server) else 0.0
 
-            # 4. Power consolidation: prefer already-active servers when burst factor is low
-            is_idle = len(s.allocated_workloads) == 0
-            consolidation_penalty = (self.idle_wakeup_penalty / burst_factor) if is_idle else 0.0
+            # 3. Tier-aware headroom: reserve 32-CPU/64-GB nodes for batch jobs when small nodes exist
+            is_large_server = s.total_cpu >= 32.0 or s.total_ram >= 64.0
+            tier_pen = (
+                (self.tier_penalty_weight * burst_factor)
+                if (is_small_job and is_large_server)
+                else 0.0
+            )
+
+            # 4. Sequential turnover preference
+            order_bias = idx * self.order_bias_weight
 
             score = (
-                (self.packing_weight * leftover_norm)
-                + (self.skew_weight * skew * burst_factor)
-                + tier_penalty
-                + consolidation_penalty
+                (self.skew_weight * skew)
+                + (self.packing_weight * rem_ram_norm)
+                + sliver_pen
+                + tier_pen
+                + order_bias
             )
 
             if score < best_score - 1e-12:
@@ -266,4 +278,3 @@ class UCBBanditAllocator(Allocator):
         reward = min(1.0, 0.75 * balance_score + tier_bonus)
         self._update_reward(context, arm_idx, reward)
         return chosen_server
-

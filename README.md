@@ -40,7 +40,9 @@ CloudPilot/
 ├── docs/                    # Research documentation and benchmarks
 ├── experiments/             # Allocation experiments and evaluation scripts
 │   ├── __init__.py
+│   ├── benchmark_suite.py   # Multi-scenario benchmark engine and latency profiler
 │   ├── run_baselines.py     # Static benchmark suite for baseline heuristics
+│   ├── run_benchmark_suite.py # Master benchmark runner and report generator
 │   ├── run_ml_prediction.py # ML workload demand forecasting benchmark
 │   ├── run_optimization_benchmark.py # Intelligent ML & RL allocation benchmark
 │   └── run_trace_benchmark.py # Dynamic discrete-event trace replay benchmark
@@ -53,6 +55,9 @@ CloudPilot/
 ├── results/                 # Benchmark output metrics (.json and .csv)
 │   ├── baseline_metrics.csv
 │   ├── baseline_metrics.json
+│   ├── benchmark_report.md
+│   ├── benchmark_suite.csv
+│   ├── benchmark_suite.json
 │   ├── ml_prediction_metrics.csv
 │   ├── ml_prediction_metrics.json
 │   ├── optimization_metrics.csv
@@ -61,6 +66,7 @@ CloudPilot/
 │   └── trace_metrics.json
 ├── tests/                   # Automated unit and integration test suite
 │   ├── __init__.py
+│   ├── test_benchmark_suite.py # Benchmark suite runner & latency telemetry tests
 │   ├── test_cluster.py      # Cluster aggregate metrics and lifecycle tests
 │   ├── test_heuristics.py   # Heuristic placement and SLA constraint tests
 │   ├── test_ml_prediction.py # ML feature engineering, forecasters, and metrics tests
@@ -210,6 +216,15 @@ python experiments/run_optimization_benchmark.py
 
 Results are printed to stdout and saved in `results/optimization_metrics.json` and `results/optimization_metrics.csv`.
 
+### Comprehensive Performance Benchmark & Scalability Sweep (Step 6)
+Execute the multi-scenario benchmark engine across steady, diurnal, batch, and flash-crowd stress workloads, as well as a cluster scalability sweep (20, 50, 100 heterogeneous servers) with microsecond-level decision latency profiling:
+
+```bash
+python experiments/run_benchmark_suite.py
+```
+
+Results are exported to `results/benchmark_suite.json`, `results/benchmark_suite.csv`, and a formatted Markdown report in `results/benchmark_report.md`.
+
 ---
 
 ## 6. How to Execute Tests
@@ -235,5 +250,6 @@ python -m pytest -v
 - [x] Real-world trace replay (Alibaba Cluster Trace / Google Borg schemas and discrete-event TraceSimulator).
 - [x] Machine learning model integration for predictive workload sizing (Naive, Holt-EWMA, and Ridge LinearAR).
 - [x] Intelligent resource optimization with PredictiveAllocator (whale protection, skew alignment) & Contextual UCB Multi-Armed Bandit meta-scheduling.
-- [ ] Reinforcement learning and predictive dynamic auto-scaler for multi-cluster sizing.
+- [x] Comprehensive performance benchmarking, latency profiling, and multi-scenario stress testing (Step 6).
+- [ ] Multi-cluster federation and dynamic predictive autoscaling.
 
