@@ -34,7 +34,8 @@ CloudPilot/
 ├── backend/                 # Production HTTP Control Plane & Live Dashboard
 │   ├── __init__.py          # Public backend exports
 │   ├── server.py            # Zero-dependency ThreadingHTTPServer & REST API
-│   └── service.py           # Thread-safe CloudPilotService fleet manager
+│   ├── service.py           # Thread-safe CloudPilotService fleet manager
+│   └── smoke_test.py        # CLI end-to-end smoke test & healthcheck suite
 ├── datasets/                # Workload datasets and trace loaders
 │   ├── __init__.py
 │   ├── sample_alibaba_trace.csv # Generated 1,000-workload Alibaba cluster trace
@@ -81,6 +82,8 @@ CloudPilot/
 │   └── test_workload.py     # Workload test cases (validation, equality)
 ├── main.py                  # Simulator entry point and demonstration
 ├── requirements.txt         # Project dependencies
+├── Dockerfile               # Production container image definition (python:3.12-slim)
+├── .dockerignore            # Container build exclusions
 └── README.md                # Project documentation
 ```
 
@@ -254,6 +257,32 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in any web browser to view t
 | `POST` | `/api/v1/reset` | Reset cluster fleet to idle empty state | `200 OK` |
 | `POST` | `/api/v1/simulate` | Run on-demand trace simulation (`{"policy": "...", "num_workloads": 200}`) | `200 OK`, `400 Bad Request` |
 
+### CLI Smoke Test & Healthcheck Suite
+CloudPilot provides an automated 7-step smoke test verifying end-to-end API lifecycle operations (healthcheck, policy switching, allocation, telemetry, release, simulation, and cluster reset) with latency profiling:
+
+```bash
+# Run against an auto-spawned ephemeral server
+python -m backend.smoke_test
+
+# Or run against an existing running instance
+python -m backend.smoke_test --url http://127.0.0.1:8000
+```
+
+### Docker Container Deployment
+CloudPilot packages as a zero-dependency, non-root `python:3.12-slim` container with an internal `urllib.request` healthcheck:
+
+```bash
+# Build the container image
+docker build -t cloudpilot .
+
+# Run the container with port forwarding
+docker run -d -p 8000:8000 --name cloudpilot-server cloudpilot
+
+# Check health and container logs
+docker ps
+docker logs cloudpilot-server
+```
+
 ---
 
 ## 7. How to Execute Tests
@@ -280,6 +309,6 @@ python -m pytest -v
 - [x] Machine learning model integration for predictive workload sizing (Naive, Holt-EWMA, and Ridge LinearAR).
 - [x] Intelligent resource optimization with PredictiveAllocator (whale protection, skew alignment) & Contextual UCB Multi-Armed Bandit meta-scheduling.
 - [x] Comprehensive performance benchmarking, latency profiling, and multi-scenario stress testing (Step 6).
-- [x] Production HTTP Control-Plane API & Live Dashboard with dynamic policy switching and on-demand trace simulation (Step 7).
+- [x] Production HTTP Control-Plane API, Live Dashboard, CLI smoke test & Docker deployment (Step 7).
 - [ ] Multi-cluster federation and dynamic predictive autoscaling.
 

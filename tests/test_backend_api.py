@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, Tuple
 from allocation.exceptions import InvalidResourceError, ReleaseError
 from backend.server import create_app_server
 from backend.service import CloudPilotService
+from backend.smoke_test import run_smoke_suite
 
 
 class TestCloudPilotService(unittest.TestCase):
@@ -290,6 +291,12 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         status_post, data_post = self._request("POST", "/api/v1/unknown", {})
         self.assertEqual(status_post, 404)
         self.assertIn("error", data_post)
+
+    def test_smoke_suite_executes_successfully(self) -> None:
+        # Verify run_smoke_suite against live server URL
+        url = f"http://{self.host}:{self.port}"
+        ok = run_smoke_suite(base_url=url)
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":
