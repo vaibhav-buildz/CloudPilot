@@ -83,3 +83,4 @@ SERVICE_URL=$(gcloud run services describe cloudpilot --region $REGION --format 
 # Run smoke test against deployed Cloud Run service
 python -m backend.smoke_test --url $SERVICE_URL
 ```
+

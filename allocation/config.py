@@ -20,3 +20,4 @@ def build_heterogeneous_specs(num_servers: int = 20) -> List[Tuple[str, float, f
     for i in range(num_large):
         specs.append((f"large-{i:03d}", 32.0, 64.0))
     return specs
+

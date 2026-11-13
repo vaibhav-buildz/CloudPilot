@@ -240,3 +240,4 @@ def run_statistical_evaluation() -> Tuple[List[Dict[str, Any]], str]:
 
 if __name__ == "__main__":
     run_statistical_evaluation()
+

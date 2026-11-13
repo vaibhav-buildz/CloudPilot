@@ -312,7 +312,16 @@ docker logs cloudpilot-server
 
 ---
 
-## 7. How to Execute Tests
+## 7. Multi-Platform Free Cloud Deployment (Step 8)
+
+CloudPilot is production-hardened with rate-limiting, security headers (`X-Content-Type-Options: nosniff`), concurrency gates, API key authentication (`CLOUDPILOT_API_KEY`), and pre-configured deployment targets. See [docs/DEPLOY.md](docs/DEPLOY.md) for full walkthroughs:
+- **Render**: Blueprint-driven web deployment via `render.yaml`.
+- **Hugging Face Spaces**: Interactive containerized demo via Docker SDK and `app_port: 8000`.
+- **Google Cloud Run**: Serverless container execution with auto-scaling down to zero (`gcloud run deploy --source .`).
+
+---
+
+## 8. How to Execute Tests
 
 The test suite runs using either Python's built-in `unittest` runner or `pytest`.
 
@@ -328,7 +337,7 @@ python -m pytest -v
 
 ---
 
-## 8. Roadmap
+## 9. Roadmap
 
 - [x] Multi-server placement heuristics (First-Fit, Best-Fit, Worst-Fit, Round-Robin).
 - [x] Synthetic workload generation and baseline benchmarks.
@@ -337,5 +346,5 @@ python -m pytest -v
 - [x] Intelligent resource optimization with PredictiveAllocator (whale protection, skew alignment) & Contextual UCB Multi-Armed Bandit meta-scheduling.
 - [x] Comprehensive performance benchmarking, latency profiling, and multi-scenario stress testing (Step 6).
 - [x] Production HTTP Control-Plane API, Live Dashboard, CLI smoke test & Docker deployment (Step 7).
-- [ ] Multi-cluster federation and dynamic predictive autoscaling.
+- [x] Production hardening, security headers, concurrency gates, zero-leakage statistical evaluation, CI pipeline & multi-platform deployment (Step 8).
 
