@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from allocation.cluster import Cluster
 from allocation.config import build_heterogeneous_specs
 from allocation.heuristics import Allocator, BestFit, FirstFit, RoundRobin, WorstFit
+from allocation.scoring import compute_sla_efficiency_score
 from allocation.simulator import SimulationResult, TraceSimulator
 from allocation.workload import Workload
 from datasets.trace_loader import generate_alibaba_style_trace
@@ -46,20 +47,6 @@ class BenchmarkRecord:
     total_runtime_ms: float
     us_per_workload: float
     sla_efficiency_score: float
-
-
-def compute_sla_efficiency_score(sim: SimulationResult) -> float:
-    """Computes a composite [0, 100] research score balancing SLA acceptance (60%),
-    RAM utilization (25%), and load balance (15%).
-    """
-    acceptance_rate = 100.0 - sim.rejection_rate_pct
-    balance_score = max(0.0, 100.0 - sim.avg_load_imbalance * 2.5)
-    score = (
-        0.60 * acceptance_rate
-        + 0.25 * sim.avg_ram_utilization_pct
-        + 0.15 * balance_score
-    )
-    return round(score, 2)
 
 
 def build_allocator_factories(

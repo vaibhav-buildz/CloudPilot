@@ -10,10 +10,10 @@ from allocation.exceptions import AllocationError, InvalidResourceError, Release
 from allocation.config import build_heterogeneous_specs
 from allocation.heuristics import Allocator, BestFit, FirstFit, RoundRobin, WorstFit
 from allocation.resource import CloudServer
+from allocation.scoring import compute_sla_efficiency_score
 from allocation.simulator import TraceSimulator
 from allocation.workload import Workload
 from datasets.trace_loader import generate_alibaba_style_trace
-from experiments.benchmark_suite import compute_sla_efficiency_score
 from ml.features import bucketize_trace
 from ml.optimizer import PredictiveAllocator, UCBBanditAllocator
 from ml.predictor import EWMAForecaster, LinearARForecaster

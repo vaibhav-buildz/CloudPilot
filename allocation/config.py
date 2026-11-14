@@ -2,6 +2,8 @@
 
 from typing import List, Tuple
 
+from allocation.scoring import compute_sla_efficiency_score
+
 
 def build_heterogeneous_specs(num_servers: int = 20) -> List[Tuple[str, float, float]]:
     """Builds a 60% small (8 CPU, 16 GB) / 40% large (32 CPU, 64 GB) heterogeneous cluster.

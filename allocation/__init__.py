@@ -6,6 +6,7 @@ heuristic placement algorithms, discrete-event trace simulation, and intelligent
 
 from allocation.cluster import Cluster
 from allocation.config import build_heterogeneous_specs
+from allocation.scoring import compute_sla_efficiency_score
 from allocation.exceptions import (
     AllocationError,
     InsufficientCapacityError,
@@ -31,6 +32,7 @@ __all__ = [
     "Workload",
     "Cluster",
     "build_heterogeneous_specs",
+    "compute_sla_efficiency_score",
     "Allocator",
     "FirstFit",
     "BestFit",

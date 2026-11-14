@@ -42,7 +42,30 @@ jobs:
 
       - name: Verify Docker build
         run: |
-          docker build -t cloudpilot:ci .
+          docker build -t cloudpilot-test .
+
+      - name: Verify Docker container runtime startup
+        run: |
+          docker run -d --name cp -p 8000:8000 cloudpilot-test
+          READY=0
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/v1/health || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Backend healthy after ${i}s (HTTP 200)"
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" -ne 1 ]; then
+            echo "Backend failed healthcheck within 30s. Container logs:"
+            docker logs cp
+            docker stop cp 2>/dev/null || true
+            docker rm cp 2>/dev/null || true
+            exit 1
+          fi
+          docker stop cp
+          docker rm cp
 
   frontend:
     runs-on: ubuntu-latest
