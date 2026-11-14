@@ -45,14 +45,15 @@ CloudPilot/
 │   ├── __init__.py          # Public backend exports
 │   ├── server.py            # Zero-dependency ThreadingHTTPServer & REST API
 │   ├── service.py           # Thread-safe CloudPilotService fleet manager
-│   └── smoke_test.py        # CLI end-to-end smoke test & healthcheck suite
+│   ├── smoke_test.py        # CLI end-to-end smoke test & healthcheck suite
+│   └── store.py             # Supabase persistence client using standard library urllib
 ├── datasets/                # Workload datasets and trace loaders
 │   ├── __init__.py
 │   ├── sample_alibaba_trace.csv # Generated 1,000-workload Alibaba cluster trace
 │   ├── synthetic.py         # Skewed synthetic workload generator
 │   └── trace_loader.py      # Real cloud trace loader (Alibaba / Google Borg schemas)
 ├── docs/                    # Research documentation and deployment guides
-│   └── DEPLOY.md            # Multi-cloud deployment guide (Render, HF Spaces, Cloud Run)
+│   └── DEPLOY.md            # Multi-cloud deployment guide (Render, Vercel, Supabase, Cloud Run)
 ├── experiments/             # Allocation experiments and evaluation scripts
 │   ├── __init__.py
 │   ├── benchmark_suite.py   # Multi-scenario benchmark engine and latency profiler
@@ -62,6 +63,11 @@ CloudPilot/
 │   ├── run_optimization_benchmark.py # Intelligent ML & RL allocation benchmark
 │   ├── run_statistical_eval.py # Zero-leakage 30-seed statistical evaluation suite
 │   └── run_trace_benchmark.py # Dynamic discrete-event trace replay benchmark
+├── frontend/                # Production Vite + React Control-Plane Dashboard (Vercel)
+│   ├── src/                 # React components (Live Cluster, Simulator, SVG Compare, History, Admin)
+│   ├── package.json         # React 19 + Vite dependencies
+│   ├── vercel.json          # Vercel SPA deployment configuration
+│   └── README.md            # Frontend setup & development documentation
 ├── ml/                      # Machine learning demand forecasting models & optimizers
 │   ├── __init__.py          # Public ML API exports
 │   ├── features.py          # TimeWindowBucket and lag/diurnal feature engineering
