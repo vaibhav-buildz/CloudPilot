@@ -12,7 +12,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from allocation.exceptions import InvalidResourceError, ReleaseError
 from allocation.workload import Workload
-from backend.server import SIM_SLOTS, create_app_server
+from backend.server import SIM_SLOTS, _sim_rate_history, _sim_rate_lock, create_app_server
+import backend.store as store
 from backend.service import CloudPilotService
 from backend.smoke_test import run_smoke_suite
 from ml.optimizer import PredictiveAllocator, UCBBanditAllocator
@@ -354,6 +355,93 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         finally:
             os.environ.pop("CLOUDPILOT_API_KEY", None)
 
+    def test_cors_headers(self) -> None:
+        conn = http.client.HTTPConnection(self.host, self.port)
+        conn.request("GET", "/api/v1/health")
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Access-Control-Allow-Origin", resp.headers)
+        self.assertIn("Access-Control-Allow-Methods", resp.headers)
+        self.assertIn("Access-Control-Allow-Headers", resp.headers)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+        conn.close()
+
+    def test_options_204(self) -> None:
+        conn = http.client.HTTPConnection(self.host, self.port)
+        conn.request("OPTIONS", "/api/v1/simulate")
+        resp = conn.getresponse()
+        body = resp.read()
+        self.assertEqual(resp.status, 204)
+        self.assertEqual(len(body), 0)
+        self.assertEqual(resp.headers.get("Content-Length"), "0")
+        self.assertIn("Access-Control-Allow-Origin", resp.headers)
+        self.assertIn("Access-Control-Allow-Methods", resp.headers)
+        conn.close()
+
+    def test_selective_auth_scope(self) -> None:
+        os.environ["CLOUDPILOT_API_KEY"] = "test-secret-key"
+        try:
+            # Public GET endpoints do NOT require key
+            st, _ = self._request("GET", "/healthz")
+            self.assertEqual(st, 200)
+            st, _ = self._request("GET", "/api/v1/health")
+            self.assertEqual(st, 200)
+            st, _ = self._request("GET", "/api/v1/cluster")
+            self.assertEqual(st, 200)
+            st, _ = self._request("GET", "/api/v1/history")
+            self.assertEqual(st, 200)
+
+            # Public POST /simulate does NOT require key
+            st, res = self._request(
+                "POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 10}
+            )
+            self.assertEqual(st, 200)
+            self.assertIn("placed_count", res)
+
+            # Protected POST endpoints DO require key
+            st, _ = self._request("POST", "/api/v1/policy", {"policy": "best_fit"})
+            self.assertEqual(st, 401)
+            st, _ = self._request(
+                "POST", "/api/v1/allocate", {"workload_id": "w1", "cpu": 1.0, "ram": 2.0}
+            )
+            self.assertEqual(st, 401)
+            st, _ = self._request("POST", "/api/v1/release", {"workload_id": "w1"})
+            self.assertEqual(st, 401)
+            st, _ = self._request("POST", "/api/v1/reset", {})
+            self.assertEqual(st, 401)
+
+            # Providing valid key unlocks protected endpoints
+            st, _ = self._request(
+                "POST",
+                "/api/v1/policy",
+                {"policy": "best_fit"},
+                headers={"X-API-Key": "test-secret-key"},
+            )
+            self.assertEqual(st, 200)
+        finally:
+            os.environ.pop("CLOUDPILOT_API_KEY", None)
+
+    def test_simulate_rate_limit_429(self) -> None:
+        client_ip = "127.0.0.1"
+        with _sim_rate_lock:
+            # Pre-fill 10 recent timestamps
+            _sim_rate_history[client_ip] = [time.time()] * 10
+        try:
+            status, data = self._request(
+                "POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 10}
+            )
+            self.assertEqual(status, 429)
+            self.assertIn("Rate limit exceeded", data.get("error", ""))
+        finally:
+            with _sim_rate_lock:
+                _sim_rate_history.clear()
+
+    def test_get_history(self) -> None:
+        status, data = self._request("GET", "/api/v1/history")
+        self.assertEqual(status, 200)
+        self.assertIsInstance(data, list)
+
     def test_simulation_concurrency_429(self) -> None:
         self.assertTrue(SIM_SLOTS.acquire(blocking=False))
         self.assertTrue(SIM_SLOTS.acquire(blocking=False))
@@ -380,6 +468,40 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         # Re-observing same workload does not duplicate count
         ucb.observe(w1)
         self.assertEqual(pred_arm._win_arrivals, 1)
+
+
+class TestSupabaseStore(unittest.TestCase):
+    """Unit tests for Supabase store helper (backend/store.py)."""
+
+    def test_headers_with_jwt_token(self) -> None:
+        jwt_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy.sig"
+        headers = store._headers(jwt_key)
+        self.assertEqual(headers["apikey"], jwt_key)
+        self.assertEqual(headers["Authorization"], f"Bearer {jwt_key}")
+        self.assertEqual(headers["Content-Type"], "application/json")
+
+    def test_headers_with_sb_secret_token(self) -> None:
+        sb_secret = "sb_secret_abcd1234efgh5678"
+        headers = store._headers(sb_secret)
+        self.assertEqual(headers["apikey"], sb_secret)
+        # sb_secret_ must NOT include Authorization header
+        self.assertNotIn("Authorization", headers)
+        self.assertEqual(headers["Content-Type"], "application/json")
+
+    def test_silent_noop_when_env_vars_missing(self) -> None:
+        old_url = os.environ.pop("SUPABASE_URL", None)
+        old_key = os.environ.pop("SUPABASE_SERVICE_KEY", None)
+        try:
+            # save should silently no-op without raising
+            store.save("simulation_runs", {"test": 123})
+            # recent should return empty list
+            rows = store.recent("simulation_runs")
+            self.assertEqual(rows, [])
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
 
 
 if __name__ == "__main__":

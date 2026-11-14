@@ -10,14 +10,27 @@ import time
 import traceback
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from allocation.exceptions import AllocationError, InvalidResourceError, ReleaseError
+import backend.store as store
 from backend.service import CloudPilotService
 
 MAX_BODY = 64 * 1024  # 64 KB
 SIM_SLOTS = threading.BoundedSemaphore(2)
+
+SIM_RATE_LIMIT = 10
+SIM_RATE_WINDOW = 60.0  # seconds
+_sim_rate_lock = threading.Lock()
+_sim_rate_history: Dict[str, List[float]] = {}
+
+PROTECTED_POST_PATHS = {
+    "/api/v1/policy",
+    "/api/v1/allocate",
+    "/api/v1/release",
+    "/api/v1/reset",
+}
 
 
 class PayloadTooLargeError(Exception):
@@ -144,12 +157,20 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+    def _send_cors_headers(self) -> None:
+        """Emits standard CORS headers configurable via ALLOWED_ORIGIN env var."""
+        origin = os.environ.get("ALLOWED_ORIGIN", "*")
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+
+    def _send_json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -159,8 +180,17 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:
+        """Handles CORS preflight requests."""
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Content-Length", "0")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self._send_cors_headers()
+        self.end_headers()
 
     def _authorized(self) -> bool:
         """Verifies X-API-Key against CLOUDPILOT_API_KEY environment variable if configured."""
@@ -212,10 +242,12 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, self.server.service.get_health())
             elif path == "/api/v1/cluster":
                 self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
+            elif path == "/api/v1/history":
+                self._send_json(HTTPStatus.OK, store.recent("simulation_runs"))
             else:
                 status = HTTPStatus.NOT_FOUND
                 self._send_json(status, {"error": f"Endpoint '{path}' not found."})
-        except Exception as exc:
+        except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             self._send_json(status, {"error": "internal"})
@@ -227,12 +259,14 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         status = HTTPStatus.OK
         acquired_sim = False
         try:
-            if not self._authorized():
+            path = urlparse(self.path).path
+
+            # Only protected state-mutating endpoints require API key auth
+            if path in PROTECTED_POST_PATHS and not self._authorized():
                 status = HTTPStatus.UNAUTHORIZED
                 self._send_json(status, {"error": "Unauthorized."})
                 return
 
-            path = urlparse(self.path).path
             body = self._read_json_body()
 
             if path == "/api/v1/policy":
@@ -253,6 +287,16 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     arrival_time=body.get("arrival_time", 0.0),
                     duration=body.get("duration"),
                 )
+                alloc_record = {
+                    "workload_id": body.get("workload_id"),
+                    "cpu": body.get("cpu"),
+                    "ram": body.get("ram"),
+                    "placed": bool(res.get("placed")),
+                    "server_id": res.get("server_id"),
+                    "policy": res.get("active_policy"),
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+                store.save("allocation_events", alloc_record)
                 status = HTTPStatus.CREATED if res["placed"] else HTTPStatus.CONFLICT
                 self._send_json(status, res)
 
@@ -269,6 +313,26 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(status, res)
 
             elif path == "/api/v1/simulate":
+                # Per-client IP rate limiter: max 10 requests / 60 seconds
+                client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
+                now = time.time()
+                with _sim_rate_lock:
+                    recent_calls = [
+                        t for t in _sim_rate_history.get(client_ip, [])
+                        if now - t < SIM_RATE_WINDOW
+                    ]
+                    if len(recent_calls) >= SIM_RATE_LIMIT:
+                        _sim_rate_history[client_ip] = recent_calls
+                        status = HTTPStatus.TOO_MANY_REQUESTS
+                        self._send_json(
+                            status,
+                            {"error": "Rate limit exceeded. Max 10 simulations per minute."},
+                        )
+                        return
+                    recent_calls.append(now)
+                    _sim_rate_history[client_ip] = recent_calls
+
+                # Semaphore concurrency control
                 if not SIM_SLOTS.acquire(blocking=False):
                     status = HTTPStatus.TOO_MANY_REQUESTS
                     self._send_json(
@@ -281,6 +345,9 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     num_workloads=body.get("num_workloads", 200),
                     seed=body.get("seed", 42),
                 )
+                sim_record = dict(res)
+                sim_record["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                store.save("simulation_runs", sim_record)
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 
@@ -300,7 +367,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         except AllocationError as exc:
             status = HTTPStatus.CONFLICT
             self._send_json(status, {"error": str(exc)})
-        except Exception as exc:
+        except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             self._send_json(status, {"error": "internal"})
