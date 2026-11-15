@@ -1,6 +1,7 @@
 """Unit and live HTTP integration tests for CloudPilot Control Plane API."""
 
 import http.client
+import io
 import json
 import os
 import threading
@@ -9,6 +10,7 @@ import unittest
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional, Tuple
+from unittest.mock import MagicMock, patch
 
 from allocation.exceptions import InvalidResourceError, ReleaseError
 from allocation.workload import Workload
@@ -392,6 +394,18 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
             st, _ = self._request("GET", "/api/v1/history")
             self.assertEqual(st, 200)
 
+            # Protected diagnostic GET endpoint requires key
+            st, _ = self._request("GET", "/api/v1/store/status")
+            self.assertEqual(st, 401)
+            st, diag = self._request(
+                "GET", "/api/v1/store/status", headers={"X-API-Key": "test-secret-key"}
+            )
+            self.assertEqual(st, 200)
+            self.assertIn("url_set", diag)
+            self.assertIn("key_set", diag)
+            self.assertIn("key_type", diag)
+            self.assertIn("url_host", diag)
+
             # Public POST /simulate does NOT require key
             st, res = self._request(
                 "POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 10}
@@ -441,6 +455,14 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         status, data = self._request("GET", "/api/v1/history")
         self.assertEqual(status, 200)
         self.assertIsInstance(data, list)
+
+    def test_get_store_status_unprotected_when_no_api_key(self) -> None:
+        status, data = self._request("GET", "/api/v1/store/status")
+        self.assertEqual(status, 200)
+        self.assertIn("url_set", data)
+        self.assertIn("key_set", data)
+        self.assertIn("key_type", data)
+        self.assertIn("url_host", data)
 
     def test_simulation_concurrency_429(self) -> None:
         self.assertTrue(SIM_SLOTS.acquire(blocking=False))
@@ -502,6 +524,111 @@ class TestSupabaseStore(unittest.TestCase):
                 os.environ["SUPABASE_URL"] = old_url
             if old_key is not None:
                 os.environ["SUPABASE_SERVICE_KEY"] = old_key
+
+    def test_diagnose_missing_env(self) -> None:
+        old_url = os.environ.pop("SUPABASE_URL", None)
+        old_key = os.environ.pop("SUPABASE_SERVICE_KEY", None)
+        try:
+            diag = store.diagnose()
+            self.assertFalse(diag["url_set"])
+            self.assertFalse(diag["key_set"])
+            self.assertEqual(diag["key_type"], "other")
+            self.assertIsNone(diag["url_host"])
+            self.assertIsNone(diag["status_code"])
+            self.assertIn("Missing", diag["response_body"])
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+
+    @patch("urllib.request.urlopen")
+    def test_diagnose_with_mocked_urlopen_success(self, mock_urlopen: MagicMock) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status = 201
+        mock_resp.read.return_value = b'{"status": "ok", "id": 42}'
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        old_url = os.environ.get("SUPABASE_URL")
+        old_key = os.environ.get("SUPABASE_SERVICE_KEY")
+        secret_value = "sb_secret_super_secret_key_12345"
+        try:
+            os.environ["SUPABASE_URL"] = "https://my-supabase-db.supabase.co"
+            os.environ["SUPABASE_SERVICE_KEY"] = secret_value
+
+            diag = store.diagnose()
+
+            self.assertTrue(diag["url_set"])
+            self.assertTrue(diag["key_set"])
+            self.assertEqual(diag["key_type"], "sb_secret")
+            self.assertEqual(diag["url_host"], "my-supabase-db.supabase.co")
+            self.assertEqual(diag["status_code"], 201)
+            self.assertIn('"id": 42', diag["response_body"])
+
+            # Verify request headers and URL
+            mock_urlopen.assert_called_once()
+            called_req = mock_urlopen.call_args[0][0]
+            self.assertEqual(
+                called_req.full_url,
+                "https://my-supabase-db.supabase.co/rest/v1/simulation_runs",
+            )
+            # In urllib.request.Request, headers are capitalized
+            self.assertEqual(called_req.headers.get("Apikey"), secret_value)
+            # sb_secret_ should NOT have Authorization header
+            self.assertNotIn("Authorization", called_req.headers)
+
+            # CRITICAL: Verify the secret key is NEVER exposed anywhere in the output
+            serialized = json.dumps(diag)
+            self.assertNotIn(secret_value, serialized)
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            else:
+                os.environ.pop("SUPABASE_URL", None)
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+            else:
+                os.environ.pop("SUPABASE_SERVICE_KEY", None)
+
+    @patch("urllib.request.urlopen")
+    def test_diagnose_with_mocked_urlopen_http_error(self, mock_urlopen: MagicMock) -> None:
+        error_body = b'{"message": "Invalid JWT token"}'
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://my-supabase-db.supabase.co/rest/v1/simulation_runs",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(error_body),
+        )
+
+        old_url = os.environ.get("SUPABASE_URL")
+        old_key = os.environ.get("SUPABASE_SERVICE_KEY")
+        jwt_value = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy"
+        try:
+            os.environ["SUPABASE_URL"] = "https://my-supabase-db.supabase.co"
+            os.environ["SUPABASE_SERVICE_KEY"] = jwt_value
+
+            diag = store.diagnose()
+
+            self.assertTrue(diag["url_set"])
+            self.assertTrue(diag["key_set"])
+            self.assertEqual(diag["key_type"], "jwt")
+            self.assertEqual(diag["url_host"], "my-supabase-db.supabase.co")
+            self.assertEqual(diag["status_code"], 401)
+            self.assertIn("Invalid JWT token", diag["response_body"])
+
+            # Verify key is never exposed
+            serialized = json.dumps(diag)
+            self.assertNotIn(jwt_value, serialized)
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            else:
+                os.environ.pop("SUPABASE_URL", None)
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+            else:
+                os.environ.pop("SUPABASE_SERVICE_KEY", None)
 
 
 if __name__ == "__main__":

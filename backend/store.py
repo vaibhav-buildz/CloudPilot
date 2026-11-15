@@ -6,6 +6,7 @@ import threading
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 
 def _cfg() -> Tuple[Optional[str], Optional[str]]:
@@ -79,3 +80,70 @@ def recent(table: str, limit: int = 50) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
+
+def diagnose() -> Dict[str, Any]:
+    """Runs a synchronous diagnostic check on the Supabase store connection.
+
+    Never exposes the API key in the returned dictionary or logs.
+    """
+    url, key = _cfg()
+    url_set = bool(url)
+    key_set = bool(key)
+
+    if key and key.startswith("sb_secret_"):
+        key_type = "sb_secret"
+    elif key and key.startswith("eyJ"):
+        key_type = "jwt"
+    else:
+        key_type = "other"
+
+    url_host: Optional[str] = None
+    if url:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        url_host = parsed.hostname
+
+    status_code: Optional[int] = None
+    response_body: Optional[str] = None
+
+    if not url or not key:
+        response_body = "Missing SUPABASE_URL or SUPABASE_SERVICE_KEY"
+    else:
+        try:
+            endpoint = f"{url.rstrip('/')}/rest/v1/simulation_runs"
+            payload = {
+                "policy": "diagnostic",
+                "num_workloads": 0,
+                "seed": 0,
+                "result": {},
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                endpoint,
+                data=data,
+                headers=_headers(key),
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                status_code = getattr(resp, "status", getattr(resp, "code", 200))
+                raw_body = resp.read().decode("utf-8", errors="replace")
+                response_body = raw_body[:300]
+        except urllib.error.HTTPError as exc:
+            status_code = exc.code
+            try:
+                raw_body = exc.read().decode("utf-8", errors="replace")
+                response_body = raw_body[:300] if raw_body else str(exc)[:300]
+            except Exception:
+                response_body = str(exc)[:300]
+        except Exception as exc:
+            status_code = None
+            response_body = str(exc)[:300]
+
+    return {
+        "url_set": url_set,
+        "key_set": key_set,
+        "key_type": key_type,
+        "url_host": url_host,
+        "status_code": status_code,
+        "http_status": status_code,
+        "response_body": response_body,
+    }

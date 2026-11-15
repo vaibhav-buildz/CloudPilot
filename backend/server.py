@@ -209,6 +209,10 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         if length < 0:
             raise InvalidResourceError("Invalid Content-Length.")
         if length > MAX_BODY:
+            try:
+                self.rfile.read(min(length, 256 * 1024))
+            except Exception:
+                pass
             raise PayloadTooLargeError(
                 f"Payload too large. Maximum allowed size is {MAX_BODY} bytes."
             )
@@ -244,6 +248,12 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
             elif path == "/api/v1/history":
                 self._send_json(HTTPStatus.OK, store.recent("simulation_runs"))
+            elif path == "/api/v1/store/status":
+                if not self._authorized():
+                    status = HTTPStatus.UNAUTHORIZED
+                    self._send_json(status, {"error": "Unauthorized."})
+                    return
+                self._send_json(HTTPStatus.OK, store.diagnose())
             else:
                 status = HTTPStatus.NOT_FOUND
                 self._send_json(status, {"error": f"Endpoint '{path}' not found."})
