@@ -753,20 +753,30 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {historyRuns.map((run, i) => (
-                    <tr key={run.id || run.created_at || i}>
-                      <td style={{ fontFamily: 'monospace', fontSize: '11px' }}>
-                        {run.created_at ? new Date(run.created_at).toLocaleString() : 'N/A'}
-                      </td>
-                      <td style={{ fontWeight: 600, color: '#38bdf8' }}>{run.algorithm || run.policy}</td>
-                      <td>{run.total_workloads}</td>
-                      <td>{run.placed_count}</td>
-                      <td>{run.rejection_rate_pct}%</td>
-                      <td style={{ fontWeight: 700 }}>{run.sla_efficiency_score}</td>
-                      <td>{run.avg_cpu_utilization_pct}%</td>
-                      <td>{run.avg_ram_utilization_pct}%</td>
-                    </tr>
-                  ))}
+                  {historyRuns.map((run, i) => {
+                    const res = run.result || {};
+                    const pol = run.policy || run.algorithm || res.policy_key || res.algorithm || 'unknown';
+                    const totalW = run.num_workloads ?? run.total_workloads ?? res.total_workloads ?? '-';
+                    const placed = run.placed_count ?? res.placed_count ?? '-';
+                    const rejection = run.rejection_rate_pct ?? res.rejection_rate_pct ?? 0;
+                    const sla = run.sla_efficiency_score ?? res.sla_efficiency_score ?? '-';
+                    const avgCpu = run.avg_cpu_utilization_pct ?? res.avg_cpu_utilization_pct ?? '-';
+                    const avgRam = run.avg_ram_utilization_pct ?? res.avg_ram_utilization_pct ?? '-';
+                    return (
+                      <tr key={run.id || run.created_at || i}>
+                        <td style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                          {run.created_at ? new Date(run.created_at).toLocaleString() : 'N/A'}
+                        </td>
+                        <td style={{ fontWeight: 600, color: '#38bdf8' }}>{pol}</td>
+                        <td>{totalW}</td>
+                        <td>{placed}</td>
+                        <td>{rejection}%</td>
+                        <td style={{ fontWeight: 700 }}>{sla}</td>
+                        <td>{avgCpu}%</td>
+                        <td>{avgRam}%</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

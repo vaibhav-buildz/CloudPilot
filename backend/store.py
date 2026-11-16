@@ -2,11 +2,15 @@
 
 import json
 import os
+import sys
 import threading
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+_last_save_error: Optional[Dict[str, Any]] = None
+_last_save_lock = threading.Lock()
 
 
 def _cfg() -> Tuple[Optional[str], Optional[str]]:
@@ -33,11 +37,45 @@ def _headers(key: str, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]
     return h
 
 
+def _scrub(text: str, secret: Optional[str]) -> str:
+    """Removes secret key if it appears in error messages or response bodies."""
+    if not text:
+        return ""
+    if secret and secret in text:
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def _record_save_error(table: str, status: Optional[int], raw_body: str, key: Optional[str]) -> None:
+    """Logs non-fatal error JSON to stdout and tracks last_save_error in memory."""
+    global _last_save_error
+    clean_body = _scrub(raw_body, key)
+    log_entry = {
+        "store_error": True,
+        "table": table,
+        "status": status,
+        "body": clean_body[:300],
+    }
+    try:
+        sys.stdout.write(json.dumps(log_entry) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+    with _last_save_lock:
+        _last_save_error = {
+            "status": status,
+            "body": clean_body[:200],
+        }
+
+
 def _post(table: str, row: Dict[str, Any]) -> None:
-    """Internal synchronous POST to Supabase table; fails silently on error."""
+    """Internal synchronous POST to Supabase table; fails safely with structured log on error."""
     url, key = _cfg()
     if not url or not key:
         return
+    status: Optional[int] = None
+    raw_body: str = ""
     try:
         endpoint = f"{url.rstrip('/')}/rest/v1/{table}"
         data = json.dumps(row).encode("utf-8")
@@ -47,11 +85,20 @@ def _post(table: str, row: Dict[str, Any]) -> None:
             headers=_headers(key),
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            resp.read()
-    except Exception:
-        # Silent no-op on network failure, missing table, or timeout
-        pass
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            status = getattr(resp, "status", getattr(resp, "code", 200))
+            raw_body = resp.read().decode("utf-8", errors="replace")
+            if status < 200 or status >= 300:
+                _record_save_error(table, status, raw_body, key)
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        try:
+            raw_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw_body = str(exc)
+        _record_save_error(table, status, raw_body, key)
+    except Exception as exc:
+        _record_save_error(table, None, str(exc), key)
 
 
 def save(table: str, row: Dict[str, Any]) -> None:
@@ -138,6 +185,9 @@ def diagnose() -> Dict[str, Any]:
             status_code = None
             response_body = str(exc)[:300]
 
+    with _last_save_lock:
+        last_err = dict(_last_save_error) if _last_save_error is not None else None
+
     return {
         "url_set": url_set,
         "key_set": key_set,
@@ -146,4 +196,5 @@ def diagnose() -> Dict[str, Any]:
         "status_code": status_code,
         "http_status": status_code,
         "response_body": response_body,
+        "last_save_error": last_err,
     }

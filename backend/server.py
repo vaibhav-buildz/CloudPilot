@@ -1,8 +1,10 @@
 """Zero-dependency HTTP REST API and live control-plane dashboard for CloudPilot."""
 
 import argparse
+from dataclasses import asdict, is_dataclass
 import hmac
 import json
+import math
 import os
 import sys
 import threading
@@ -36,6 +38,52 @@ PROTECTED_POST_PATHS = {
 class PayloadTooLargeError(Exception):
     """Raised when incoming request payload exceeds MAX_BODY."""
     pass
+
+
+def _sanitize_for_storage(obj: Any) -> Any:
+    """Recursively cleans objects for JSON storage, rounding floats and dropping NaN/inf."""
+    if obj is None or isinstance(obj, (bool, str, int)):
+        return obj
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return round(obj, 4)
+    if is_dataclass(obj):
+        return _sanitize_for_storage(asdict(obj))
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_storage(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_sanitize_for_storage(v) for v in obj]
+    return str(obj)
+
+
+def _prepare_simulation_row(
+    policy_key: str,
+    num_workloads: int,
+    seed: int,
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Builds the exact database row structure expected by Supabase simulation_runs."""
+    clean_result = _sanitize_for_storage(result)
+    if not isinstance(clean_result, dict):
+        clean_result = {"result": clean_result}
+
+    # Capped at 50 KB
+    MAX_BYTES = 50 * 1024
+    serialized = json.dumps(clean_result)
+    if len(serialized.encode("utf-8")) > MAX_BYTES:
+        clean_result = {
+            k: v for k, v in clean_result.items()
+            if isinstance(v, (int, float, str, bool, type(None)))
+        }
+        clean_result["_truncated"] = True
+
+    return {
+        "policy": str(policy_key),
+        "num_workloads": int(num_workloads),
+        "seed": int(seed),
+        "result": clean_result,
+    }
 
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -350,14 +398,29 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
                 acquired_sim = True
+                req_policy = body.get("policy")
+                try:
+                    num_workloads = int(body.get("num_workloads", 200))
+                except (ValueError, TypeError):
+                    num_workloads = 200
+                try:
+                    seed = int(body.get("seed", 42))
+                except (ValueError, TypeError):
+                    seed = 42
+
                 res = self.server.service.run_simulation(
-                    policy=body.get("policy"),
-                    num_workloads=body.get("num_workloads", 200),
-                    seed=body.get("seed", 42),
+                    policy=req_policy,
+                    num_workloads=num_workloads,
+                    seed=seed,
                 )
-                sim_record = dict(res)
-                sim_record["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                store.save("simulation_runs", sim_record)
+                policy_key = str(res.get("policy_key") or req_policy or "predictive_ar")
+                sim_row = _prepare_simulation_row(
+                    policy_key=policy_key,
+                    num_workloads=num_workloads,
+                    seed=seed,
+                    result=res,
+                )
+                store.save("simulation_runs", sim_row)
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 

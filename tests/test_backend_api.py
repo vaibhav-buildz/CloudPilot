@@ -463,6 +463,79 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         self.assertIn("key_set", data)
         self.assertIn("key_type", data)
         self.assertIn("url_host", data)
+        self.assertIn("last_save_error", data)
+
+    def test_simulate_saves_to_supabase_exact_format(self) -> None:
+        called_event = threading.Event()
+        captured_requests = []
+        original_urlopen = urllib.request.urlopen
+
+        def mock_urlopen_fn(req, *args, **kwargs):
+            url = getattr(req, "full_url", str(req))
+            if "supabase" in url:
+                captured_requests.append(req)
+                called_event.set()
+                mock_resp = MagicMock()
+                mock_resp.status = 201
+                mock_resp.read.return_value = b'{"status": "ok"}'
+                return mock_resp
+            return original_urlopen(req, *args, **kwargs)
+
+        old_url = os.environ.get("SUPABASE_URL")
+        old_key = os.environ.get("SUPABASE_SERVICE_KEY")
+        secret_key = "sb_secret_exact_format_key_999"
+        try:
+            os.environ["SUPABASE_URL"] = "https://mock-supabase.supabase.co"
+            os.environ["SUPABASE_SERVICE_KEY"] = secret_key
+
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen_fn):
+                status, res = self._request(
+                    "POST",
+                    "/api/v1/simulate",
+                    {"policy": "first_fit", "num_workloads": 50, "seed": 777},
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(
+                    called_event.wait(timeout=3.0),
+                    "store.save urlopen was not called within timeout",
+                )
+
+            req = captured_requests[0]
+            # 1. Assert exact request URL path
+            parsed = urllib.parse.urlparse(req.full_url)
+            self.assertEqual(parsed.path, "/rest/v1/simulation_runs")
+
+            # 2. Assert headers: apikey present, Authorization absent for sb_secret_
+            header_map = {k.lower(): v for k, v in req.headers.items()}
+            self.assertIn("apikey", header_map)
+            self.assertEqual(header_map["apikey"], secret_key)
+            self.assertNotIn("authorization", header_map)
+
+            # 3. Assert exact JSON body schema: {"policy", "num_workloads", "seed", "result"}
+            body = json.loads(req.data.decode("utf-8"))
+            self.assertEqual(set(body.keys()), {"policy", "num_workloads", "seed", "result"})
+            self.assertEqual(body["policy"], "first_fit")
+            self.assertEqual(body["num_workloads"], 50)
+            self.assertEqual(body["seed"], 777)
+            self.assertIsInstance(body["result"], dict)
+            self.assertIn("placed_count", body["result"])
+            self.assertIn("sla_efficiency_score", body["result"])
+
+            # Assert NO extra top-level keys or flattened metrics
+            self.assertNotIn("algorithm", body)
+            self.assertNotIn("total_workloads", body)
+            self.assertNotIn("placed_count", body)
+            self.assertNotIn("created_at", body)
+            self.assertNotIn("sla_efficiency_score", body)
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            else:
+                os.environ.pop("SUPABASE_URL", None)
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+            else:
+                os.environ.pop("SUPABASE_SERVICE_KEY", None)
 
     def test_simulation_concurrency_429(self) -> None:
         self.assertTrue(SIM_SLOTS.acquire(blocking=False))
@@ -620,6 +693,54 @@ class TestSupabaseStore(unittest.TestCase):
             # Verify key is never exposed
             serialized = json.dumps(diag)
             self.assertNotIn(jwt_value, serialized)
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            else:
+                os.environ.pop("SUPABASE_URL", None)
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+            else:
+                os.environ.pop("SUPABASE_SERVICE_KEY", None)
+
+    @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("urllib.request.urlopen")
+    def test_post_error_logs_json_and_records_last_save_error(
+        self, mock_urlopen: MagicMock, mock_stdout: io.StringIO
+    ) -> None:
+        err_msg = b'{"code":"PGRST204","message":"Could not find column"}'
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://my-supabase-db.supabase.co/rest/v1/simulation_runs",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(err_msg),
+        )
+
+        old_url = os.environ.get("SUPABASE_URL")
+        old_key = os.environ.get("SUPABASE_SERVICE_KEY")
+        secret_key = "sb_secret_super_secret_for_error_test"
+        try:
+            os.environ["SUPABASE_URL"] = "https://my-supabase-db.supabase.co"
+            os.environ["SUPABASE_SERVICE_KEY"] = secret_key
+
+            store._post("simulation_runs", {"test": 123})
+
+            # Verify JSON line printed to stdout
+            output = mock_stdout.getvalue()
+            self.assertIn('"store_error": true', output)
+            self.assertIn('"table": "simulation_runs"', output)
+            self.assertIn('"status": 400', output)
+            self.assertIn("PGRST204", output)
+            self.assertNotIn(secret_key, output)
+
+            # Verify diagnose() includes last_save_error
+            diag = store.diagnose()
+            self.assertIn("last_save_error", diag)
+            self.assertIsNotNone(diag["last_save_error"])
+            self.assertEqual(diag["last_save_error"]["status"], 400)
+            self.assertIn("PGRST204", diag["last_save_error"]["body"])
+            self.assertNotIn(secret_key, diag["last_save_error"]["body"])
         finally:
             if old_url is not None:
                 os.environ["SUPABASE_URL"] = old_url
