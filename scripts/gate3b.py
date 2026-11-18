@@ -32,6 +32,17 @@ from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
+FEATURE_COLS = [
+    "lag_1", "lag_2", "lag_3", "lag_4", "lag_5", "lag_6",
+    "lag_7", "lag_8", "lag_9", "lag_10", "lag_11", "lag_12",
+    "roll_mean_1h", "roll_std_1h", "roll_max_1h",
+    "roll_mean_6h", "roll_std_6h", "roll_max_6h",
+    "roll_mean_24h", "roll_std_24h", "roll_max_24h",
+    "roll_p99_7d", "lag_48", "seasonal_naive", "ewma_demand",
+    "hour_sin", "hour_cos", "req_cpu_cores"
+]
+
+
 def load_data(raw_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load container_meta.csv and container_usage_sample2.csv."""
     meta_path = raw_dir / "container_meta.csv"
@@ -115,34 +126,34 @@ def prepare_windowed_dataset(
 
         s = m["demand_cpu_ffill"]
 
-        # Lags 1 to 12
+        # Lags 1 to 12 (strictly past data, no bfill, no future values)
         for l in range(1, 13):
-            m[f"lag_{l}"] = s.shift(l).bfill().fillna(0.0)
+            m[f"lag_{l}"] = s.shift(l)
 
         # Rolling 1h (2 wins), 6h (12 wins), 24h (48 wins)
-        m["roll_mean_1h"] = s.shift(1).rolling(2, min_periods=1).mean().bfill().fillna(0.0)
+        m["roll_mean_1h"] = s.shift(1).rolling(2, min_periods=1).mean()
         m["roll_std_1h"] = s.shift(1).rolling(2, min_periods=1).std().fillna(0.0)
-        m["roll_max_1h"] = s.shift(1).rolling(2, min_periods=1).max().bfill().fillna(0.0)
+        m["roll_max_1h"] = s.shift(1).rolling(2, min_periods=1).max()
 
-        m["roll_mean_6h"] = s.shift(1).rolling(12, min_periods=1).mean().bfill().fillna(0.0)
+        m["roll_mean_6h"] = s.shift(1).rolling(12, min_periods=1).mean()
         m["roll_std_6h"] = s.shift(1).rolling(12, min_periods=1).std().fillna(0.0)
-        m["roll_max_6h"] = s.shift(1).rolling(12, min_periods=1).max().bfill().fillna(0.0)
+        m["roll_max_6h"] = s.shift(1).rolling(12, min_periods=1).max()
 
-        m["roll_mean_24h"] = s.shift(1).rolling(48, min_periods=1).mean().fillna(m["roll_mean_6h"]).bfill().fillna(0.0)
+        m["roll_mean_24h"] = s.shift(1).rolling(48, min_periods=1).mean()
         m["roll_std_24h"] = s.shift(1).rolling(48, min_periods=1).std().fillna(0.0)
-        m["roll_max_24h"] = s.shift(1).rolling(48, min_periods=1).max().fillna(m["roll_max_6h"]).bfill().fillna(0.0)
+        m["roll_max_24h"] = s.shift(1).rolling(48, min_periods=1).max()
 
         # Rolling p99 of past 7 days (336 windows)
-        m["roll_p99_7d"] = s.shift(1).rolling(336, min_periods=1).quantile(0.99).fillna(m["roll_max_24h"]).bfill().fillna(0.0)
+        m["roll_p99_7d"] = s.shift(1).rolling(336, min_periods=1).quantile(0.99)
 
         # Same time yesterday (lag 48) and Seasonal Naive (max of lag 47, 48, 49)
-        m["lag_48"] = s.shift(48).fillna(m["roll_mean_24h"]).bfill().fillna(0.0)
-        lag_47 = s.shift(47).fillna(m["lag_48"]).bfill().fillna(0.0)
-        lag_49 = s.shift(49).fillna(m["lag_48"]).bfill().fillna(0.0)
+        m["lag_48"] = s.shift(48)
+        lag_47 = s.shift(47)
+        lag_49 = s.shift(49)
         m["seasonal_naive"] = np.maximum(np.maximum(lag_47, m["lag_48"]), lag_49)
 
         # EWMA of window max
-        m["ewma_demand"] = s.shift(1).ewm(span=10, min_periods=1).mean().bfill().fillna(0.0)
+        m["ewma_demand"] = s.shift(1).ewm(span=10, min_periods=1).mean()
 
         # Diurnal features
         hour_of_day = (m["win_idx"] * (window_sec / 3600.0)) % 24.0
@@ -151,11 +162,16 @@ def prepare_windowed_dataset(
 
         # Target: demand at t+1
         m["target_next"] = s.shift(-1)
-        window_dfs.append(m)
+
+        # Drop undefined-lag rows per container (dropping warmup period where lags are undefined)
+        m_clean = m.dropna(subset=FEATURE_COLS + ["target_next"]).copy()
+        if len(m_clean) > 0:
+            window_dfs.append(m_clean)
 
     full_df = pd.concat(window_dfs, ignore_index=True)
     dt = time.perf_counter() - t0
     print(f"Constructed windowed dataset: {len(full_df):,} window instances across {len(window_dfs):,} containers in {dt:.2f}s")
+    print(f"Lag-feature integrity: NO bfill used. Undefined-lag rows dropped per container. Zero future-value leakage.")
     return full_df, censoring_stats
 
 
@@ -288,7 +304,14 @@ def evaluate_split_experiments(
     val_data = full_df[val_mask & valid_mask].dropna(subset=feature_cols + ["target_next"]).copy()
     test_data = full_df[test_mask & valid_mask].dropna(subset=feature_cols + ["target_next"]).copy()
 
+    # Train-only imputation stats (strictly computed on train partition, zero future leakage)
+    train_medians = train_data[feature_cols].median()
+    train_data[feature_cols] = train_data[feature_cols].fillna(train_medians)
+    val_data[feature_cols] = val_data[feature_cols].fillna(train_medians)
+    test_data[feature_cols] = test_data[feature_cols].fillna(train_medians)
+
     print(f"  Rows: Train={len(train_data):,}, Val={len(val_data):,}, Test={len(test_data):,}")
+    print(f"  Imputation: strictly train-only medians. Remaining NaNs: Train={train_data[feature_cols].isna().sum().sum()}, Val={val_data[feature_cols].isna().sum().sum()}, Test={test_data[feature_cols].isna().sum().sum()}")
 
     X_train = train_data[feature_cols].values
     y_train = train_data["target_next"].values
@@ -506,9 +529,13 @@ def evaluate_split_experiments(
             t_res = compute_test_metrics(r_te_selected, p_test if pol not in ["Static", "RuleThreshold"] else None)
             exceeds_2x = bool(t_res["violation_rate"] > 2.0 * target)
 
+            r_va_selected = rule_val_res if pol == "RuleThreshold" else p_val * best_m
+            val_saved_pct = float(1.0 - (r_va_selected.mean() / req_val.mean())) * 100.0
+
             target_results[tgt_key][pol] = {
                 "chosen_margin": best_m,
                 "val_violation": round(best_val_viol, 4),
+                "val_saved_pct": round(val_saved_pct, 2),
                 "test_violation": t_res["violation_rate"],
                 "test_saved_pct": t_res["saved_pct"],
                 "exceeds_2x_target": exceeds_2x,
@@ -531,7 +558,11 @@ def evaluate_split_experiments(
 def run_bootstrap_apps(
     res_split: Dict[str, Any], target_key: str = "target_1pct", n_draws: int = 500
 ) -> Dict[str, Any]:
-    """Run 500-draw bootstrap by app_du comparing best ML vs best own-history rule."""
+    """Run 500-draw bootstrap by app_du comparing best ML vs best own-history rule, RollingMax48, and Percentile99.
+
+    Model selection for 'best ML' and 'best rule' is performed STRICTLY on the VALIDATION set:
+    selecting the candidate satisfying validation violation <= target with maximum validation CPU savings.
+    """
     test_df = res_split["test_data"]
     target_dict = res_split["target_results"][target_key]
     req_v = test_df["req_cpu_cores"].values
@@ -539,15 +570,30 @@ def run_bootstrap_apps(
     ml_names = ["LinearRegression", "DecisionTree", "RandomForest", "GradientBoosting", "GBR_quantile_95", "GBR_quantile_99"]
     rule_names = ["Naive", "RollingMax48", "RollingP99_7d", "SeasonalNaive", "EWMA", "PeakOfTraining", "Percentile95", "Percentile99", "RuleThreshold"]
 
-    # Pick best ML and best Rule at validation-chosen margin
-    ml_candidates = [(p, target_dict[p]["test_saved_pct"], target_dict[p]["reserve_vector"]) for p in ml_names if p in target_dict]
-    rule_candidates = [(p, target_dict[p]["test_saved_pct"], target_dict[p]["reserve_vector"]) for p in rule_names if p in target_dict]
+    target_val = 0.01 if target_key == "target_1pct" else (0.05 if target_key == "target_5pct" else 0.001)
 
-    best_ml = max(ml_candidates, key=lambda x: x[1])
-    best_rule = max(rule_candidates, key=lambda x: x[1])
+    # STRICT VALIDATION-BASED SELECTION (never test set):
+    def select_best_on_val(candidates: List[str]) -> str:
+        meeting_target = [p for p in candidates if p in target_dict and target_dict[p]["val_violation"] <= target_val]
+        if not meeting_target:
+            meeting_target = [p for p in candidates if p in target_dict]
+        return max(meeting_target, key=lambda p: (target_dict[p]["val_saved_pct"], -target_dict[p]["val_violation"]))
 
-    best_ml_name, best_ml_saved, r_ml = best_ml
-    best_rule_name, best_rule_saved, r_rule = best_rule
+    best_ml_name = select_best_on_val(ml_names)
+    best_rule_name = select_best_on_val(rule_names)
+
+    best_ml_saved = target_dict[best_ml_name]["test_saved_pct"]
+    r_ml = target_dict[best_ml_name]["reserve_vector"]
+
+    best_rule_saved = target_dict[best_rule_name]["test_saved_pct"]
+    r_rule = target_dict[best_rule_name]["reserve_vector"]
+
+    # Comparative baselines: RollingMax48 and Percentile99
+    r_rm48 = target_dict["RollingMax48"]["reserve_vector"]
+    rm48_saved = target_dict["RollingMax48"]["test_saved_pct"]
+
+    r_p99 = target_dict["Percentile99"]["reserve_vector"]
+    p99_saved = target_dict["Percentile99"]["test_saved_pct"]
 
     unique_apps = test_df["app_du"].dropna().unique()
     app_indices = test_df.groupby("app_du").indices
@@ -555,27 +601,43 @@ def run_bootstrap_apps(
     app_req_sums = np.array([req_v[app_indices[a]].sum() for a in unique_apps])
     app_ml_sums = np.array([r_ml[app_indices[a]].sum() for a in unique_apps])
     app_rule_sums = np.array([r_rule[app_indices[a]].sum() for a in unique_apps])
+    app_rm48_sums = np.array([r_rm48[app_indices[a]].sum() for a in unique_apps])
+    app_p99_sums = np.array([r_p99[app_indices[a]].sum() for a in unique_apps])
 
     n_apps = len(unique_apps)
     rng_b = np.random.RandomState(42)
 
-    b_ml, b_rule, b_diff = [], [], []
+    b_ml, b_rule, b_rm48, b_p99 = [], [], [], []
+    b_diff_rule, b_diff_rm48, b_diff_p99 = [], [], []
+
     for _ in range(n_draws):
         idx = rng_b.choice(n_apps, size=n_apps, replace=True)
         sum_req = app_req_sums[idx].sum()
-        s_ml = 1.0 - (app_ml_sums[idx].sum() / sum_req)
-        s_rule = 1.0 - (app_rule_sums[idx].sum() / sum_req)
+        s_ml = (1.0 - (app_ml_sums[idx].sum() / sum_req)) * 100.0
+        s_rule = (1.0 - (app_rule_sums[idx].sum() / sum_req)) * 100.0
+        s_rm48 = (1.0 - (app_rm48_sums[idx].sum() / sum_req)) * 100.0
+        s_p99 = (1.0 - (app_p99_sums[idx].sum() / sum_req)) * 100.0
 
-        b_ml.append(s_ml * 100.0)
-        b_rule.append(s_rule * 100.0)
-        b_diff.append((s_ml - s_rule) * 100.0)
+        b_ml.append(s_ml)
+        b_rule.append(s_rule)
+        b_rm48.append(s_rm48)
+        b_p99.append(s_p99)
+
+        b_diff_rule.append(s_ml - s_rule)
+        b_diff_rm48.append(s_ml - s_rm48)
+        b_diff_p99.append(s_ml - s_p99)
 
     ci_ml = [round(float(np.percentile(b_ml, 2.5)), 2), round(float(np.percentile(b_ml, 97.5)), 2)]
     ci_rule = [round(float(np.percentile(b_rule, 2.5)), 2), round(float(np.percentile(b_rule, 97.5)), 2)]
-    ci_diff = [round(float(np.percentile(b_diff, 2.5)), 2), round(float(np.percentile(b_diff, 97.5)), 2)]
+    ci_rm48 = [round(float(np.percentile(b_rm48, 2.5)), 2), round(float(np.percentile(b_rm48, 97.5)), 2)]
+    ci_p99 = [round(float(np.percentile(b_p99, 2.5)), 2), round(float(np.percentile(b_p99, 97.5)), 2)]
+
+    ci_diff_rule = [round(float(np.percentile(b_diff_rule, 2.5)), 2), round(float(np.percentile(b_diff_rule, 97.5)), 2)]
+    ci_diff_rm48 = [round(float(np.percentile(b_diff_rm48, 2.5)), 2), round(float(np.percentile(b_diff_rm48, 97.5)), 2)]
+    ci_diff_p99 = [round(float(np.percentile(b_diff_p99, 2.5)), 2), round(float(np.percentile(b_diff_p99, 97.5)), 2)]
 
     overlap = not (ci_ml[1] < ci_rule[0] or ci_rule[1] < ci_ml[0])
-    ml_strictly_superior = bool(ci_diff[0] > 0)
+    ml_strictly_superior = bool(ci_diff_rule[0] > 0)
 
     return {
         "best_ml_policy": best_ml_name,
@@ -584,10 +646,21 @@ def run_bootstrap_apps(
         "best_rule_policy": best_rule_name,
         "best_rule_saved_pct": best_rule_saved,
         "rule_ci_95": ci_rule,
-        "paired_diff_mean": round(float(np.mean(b_diff)), 2),
-        "paired_diff_ci_95": ci_diff,
+        "paired_diff_mean": round(float(np.mean(b_diff_rule)), 2),
+        "paired_diff_ci_95": ci_diff_rule,
         "cis_overlap": overlap,
         "ml_strictly_superior": ml_strictly_superior,
+        # Comparisons against RollingMax48 and Percentile99
+        "rm48_policy": "RollingMax48",
+        "rm48_saved_pct": rm48_saved,
+        "rm48_ci_95": ci_rm48,
+        "diff_rm48_mean": round(float(np.mean(b_diff_rm48)), 2),
+        "diff_rm48_ci_95": ci_diff_rm48,
+        "p99_policy": "Percentile99",
+        "p99_saved_pct": p99_saved,
+        "p99_ci_95": ci_p99,
+        "diff_p99_mean": round(float(np.mean(b_diff_p99)), 2),
+        "diff_p99_ci_95": ci_diff_p99,
     }
 
 
@@ -803,29 +876,34 @@ def main():
     print(f"Total pipeline runtime: {total_time:.2f}s")
 
     # Print Summary Tables & Hypothesis Status
-    print("\n" + "=" * 80)
-    print("GATE 3b SUMMARY: APP-LEVEL BOOTSTRAP AT 1% VIOLATION")
-    print("=" * 80)
-    print(f"{'Split':<12} | {'Best ML Policy [95% CI]':<32} | {'Best Rule Policy [95% CI]':<32} | {'Paired Diff [95% CI]':<22} | {'Overlap'}")
-    print("-" * 110)
+    print("\n" + "=" * 110)
+    print("GATE 3b SUMMARY: APP-LEVEL BOOTSTRAP AT 1% VIOLATION (VALIDATION-BASED SELECTION)")
+    print("=" * 110)
+    print(f"{'Split':<10} | {'Best ML [95% CI]':<26} | {'Best Rule [95% CI]':<26} | {'Diff vs Rule':<20} | {'Diff vs RM48':<20} | {'Diff vs P99':<20}")
+    print("-" * 135)
     for s_name, b in [("TIME", boot_time), ("APP", boot_app), ("APP_TIME", boot_app_time)]:
         ml_str = f"{b['best_ml_policy']} [{b['ml_ci_95'][0]}%, {b['ml_ci_95'][1]}%]"
         rule_str = f"{b['best_rule_policy']} [{b['rule_ci_95'][0]}%, {b['rule_ci_95'][1]}%]"
-        diff_str = f"{b['paired_diff_mean']}% [{b['paired_diff_ci_95'][0]}%, {b['paired_diff_ci_95'][1]}%]"
-        print(f"{s_name:<12} | {ml_str:<32} | {rule_str:<32} | {diff_str:<22} | {b['cis_overlap']}")
+        diff_rule_str = f"{b['paired_diff_mean']:+.2f}% [{b['paired_diff_ci_95'][0]:+.2f}%, {b['paired_diff_ci_95'][1]:+.2f}%]"
+        diff_rm48_str = f"{b['diff_rm48_mean']:+.2f}% [{b['diff_rm48_ci_95'][0]:+.2f}%, {b['diff_rm48_ci_95'][1]:+.2f}%]"
+        diff_p99_str = f"{b['diff_p99_mean']:+.2f}% [{b['diff_p99_ci_95'][0]:+.2f}%, {b['diff_p99_ci_95'][1]:+.2f}%]"
+        print(f"{s_name:<10} | {ml_str:<26} | {rule_str:<26} | {diff_rule_str:<20} | {diff_rm48_str:<20} | {diff_p99_str:<20}")
 
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 110)
     print("PRE-REGISTERED HYPOTHESES VERDICTS")
-    print("=" * 80)
+    print("=" * 110)
     print(f"H1 (ML > Own-History Rule at 1% Violation): {'SUPPORTED' if h1_supported else 'NOT SUPPORTED'}")
     print(f"   Details: TIME split ML ({boot_time['best_ml_policy']}) saved {boot_time['best_ml_saved_pct']}% vs Rule ({boot_time['best_rule_policy']}) saved {boot_time['best_rule_saved_pct']}%. Paired diff = {boot_time['paired_diff_mean']}% (CI: {boot_time['paired_diff_ci_95']}%). Overlap = {boot_time['cis_overlap']}.")
 
-    print(f"H2 (Validation Margin keeps Test Violation <= 2x Target): {'SUPPORTED' if h2_supported else 'NOT SUPPORTED'}")
-    print(f"   Details: {h2_violations_exceeded}/{total_checks} policy-target configurations ({h2_violations_exceeded/total_checks*100:.1f}%) exceeded 2x target violation.")
+    print(f"H2 (Validation Margin Calibratability): {'SUPPORTED' if h2_supported else 'NOT SUPPORTED'}")
+    print(f"   Threshold (exact quote from hypotheses_gate3b.md):")
+    print(f"   \"keeping the realized test violation rate within 2x the target (i.e. <= 10%, <= 2%, and <= 0.2%, respectively).\"")
+    print(f"   \"Failure Criterion: Any policy whose test violation exceeds 2x target is flagged as miscalibrated / failing generalization.\"")
+    print(f"   Result: {h2_violations_exceeded}/{total_checks} policy-target configurations ({h2_violations_exceeded/total_checks*100:.1f}%) exceeded 2x target violation.")
 
     print(f"H3 (ML Advantage Persists on Unseen Apps): {'SUPPORTED' if h3_supported else 'NOT SUPPORTED'}")
     print(f"   Details: APP split paired diff = {boot_app['paired_diff_mean']}% (CI: {boot_app['paired_diff_ci_95']}%); APP+TIME paired diff = {boot_app_time['paired_diff_mean']}% (CI: {boot_app_time['paired_diff_ci_95']}%).")
-    print("=" * 80 + "\n")
+    print("=" * 110 + "\n")
 
 
 if __name__ == "__main__":
