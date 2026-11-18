@@ -12,9 +12,9 @@
 - **Statistical Criteria**: The 95% app-level bootstrap confidence interval (500 resamples) for CPU savings must not overlap with the best own-history rule baseline, and the paired difference ($\text{Savings}_{\text{ML}} - \text{Savings}_{\text{Rule}}$) must be strictly positive with its 95% CI entirely above 0.
 - **Empirical Verdict**: **NOT SUPPORTED**
 - **Data Evidence**:
-  - Under the TIME split, the best ML policy (`GBR_quantile_95`) saved **`77.62%`** (95% CI: `[75.86%, 79.09%]`).
-  - The best own-history rule (`EWMA`) saved **`77.63%`** (95% CI: `[75.47%, 79.44%]`).
-  - The paired difference ($\text{ML} - \text{Rule}$) is **`-0.01%`** with 95% CI `[-0.52%, 0.50%]`. The confidence intervals overlap extensively.
+  - Under the TIME split, the best ML policy selected on validation (`GBR_quantile_95`) saved **`77.36%`** (95% CI: `[75.68%, 79.10%]`).
+  - The best own-history rule selected on validation (`RollingP99_7d`) saved **`75.94%`** (95% CI: `[73.93%, 77.93%]`).
+  - The paired difference ($\text{ML} - \text{Rule}$) is **`+1.43%`** with 95% CI `[+0.66%, +2.32%]`. Although the paired diff is positive, the individual 95% bootstrap confidence intervals overlap ([75.68%, 79.10%] vs [73.93%, 77.93%]), failing the pre-registered non-overlap criterion.
 
 ---
 
@@ -23,8 +23,8 @@
 - **Failure Criterion**: Any policy whose test violation exceeds $2\times$ target is flagged as miscalibrated / failing generalization.
 - **Empirical Verdict**: **SUPPORTED**
 - **Data Evidence**:
-  - Across all 90 policy-target configurations across the three splits, only **13 out of 90 (14.4%)** exceeded $2\times$ the target violation rate.
-  - Over 85.6% of policy configurations successfully remained within the $2\times$ safety margin envelope.
+  - Across all 90 policy-target configurations across the three splits, **15 out of 90 (16.7%)** exceeded $2\times$ the target violation rate.
+  - Over 83.3% of policy configurations successfully remained within the $2\times$ safety margin envelope.
 
 ---
 
@@ -33,6 +33,6 @@
 - **Statistical Criteria**: On the unseen app partitions, the best ML policy achieves higher mean savings than the best non-ML heuristic at $\le 1\%$ violation, with positive paired difference bootstrap CI.
 - **Empirical Verdict**: **NOT SUPPORTED**
 - **Data Evidence**:
-  - **Split (b) APP**: Best ML (`DecisionTree`) saved `82.49%` (CI: `[79.14%, 85.61%]`) vs. best rule (`EWMA`) saving `81.80%` (CI: `[77.98%, 85.39%]`). The paired difference is `+0.69%` with 95% CI `[-0.27%, 2.13%]` (spans zero).
-  - **Split (c) APP+TIME**: Best ML (`RandomForest`) saved `81.33%` (CI: `[77.97%, 84.49%]`) vs. best rule (`EWMA`) saving `80.97%` (CI: `[77.36%, 84.41%]`). The paired difference is `+0.36%` with 95% CI `[-0.31%, 1.43%]` (spans zero).
-  - In neither out-of-domain split does ML exhibit a statistically significant advantage over own-history EWMA.
+  - **Split (b) APP**: Best ML (`GBR_quantile_95`) saved `81.08%` (CI: `[77.89%, 83.71%]`) vs. best rule (`RollingP99_7d`) saving `80.82%` (CI: `[76.89%, 83.95%]`). The paired difference is `+0.46%` with 95% CI `[-0.49%, +1.41%]` (spans zero).
+  - **Split (c) APP+TIME**: Best ML (`GBR_quantile_95`) saved `79.79%` (CI: `[76.11%, 82.48%]`) vs. best rule (`RollingP99_7d`) saving `79.92%` (CI: `[75.88%, 83.11%]`). The paired difference is `-0.13%` with 95% CI `[-1.17%, +0.92%]` (spans zero).
+  - In neither out-of-domain split does ML exhibit a statistically significant advantage over own-history Rolling p99.
