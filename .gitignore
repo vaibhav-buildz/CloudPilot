@@ -25,6 +25,9 @@ models/
 *.pkl
 *.joblib
 
+# Datasets
+datasets/raw/
+
 # Node / Frontend
 node_modules/
 dist/

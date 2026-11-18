@@ -1,0 +1,67 @@
+{
+  "dataset": {
+    "path": "D:\\GitHuh\\CloudPilot\\datasets\\raw\\joined_usage.csv",
+    "total_instances": 1355530,
+    "train_instances": 948870,
+    "test_instances": 406660,
+    "training_fit_sample_size": 100000
+  },
+  "ratio_cpu": {
+    "percentiles": {
+      "p5": 0.48,
+      "p25": 0.88,
+      "p50": 1.27,
+      "p75": 2.0,
+      "p95": 4.82,
+      "p99": 11.38
+    },
+    "share_under_0_5": 0.0521,
+    "share_over_1_0": 0.6167
+  },
+  "ratio_mem": {
+    "percentiles": {
+      "p5": 0.06666666666666667,
+      "p25": 0.1,
+      "p50": 0.15,
+      "p75": 0.3898305084745763,
+      "p95": 1.4406779661016949,
+      "p99": 3.673469387755102
+    },
+    "share_under_0_5": 0.8045,
+    "share_over_1_0": 0.0907
+  },
+  "spearman_correlation": {
+    "cpu": {
+      "statistic": 0.0216,
+      "pvalue": 1.2989659804684515e-139
+    },
+    "memory": {
+      "statistic": 0.3905,
+      "pvalue": 0.0
+    }
+  },
+  "chronological_evaluation": {
+    "cpu": {
+      "baseline_usage_equals_request": {
+        "mae": 0.6793,
+        "r2": -0.1612
+      },
+      "gbr": {
+        "mae": 0.724,
+        "r2": 0.0177,
+        "train_time_sec": 5.4
+      }
+    },
+    "memory": {
+      "baseline_usage_equals_request": {
+        "mae": 0.3254,
+        "r2": -0.2453
+      },
+      "gbr": {
+        "mae": 0.1536,
+        "r2": -0.0009,
+        "train_time_sec": 3.16
+      }
+    }
+  }
+}
