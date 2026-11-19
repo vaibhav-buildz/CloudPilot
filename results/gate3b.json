@@ -22,6 +22,28 @@
         ],
         "cis_overlap": true,
         "ml_strictly_superior": true,
+        "ewma_policy": "EWMA",
+        "ewma_saved_pct": 77.0,
+        "ewma_ci_95": [
+          74.98,
+          79.05
+        ],
+        "diff_ewma_mean": 0.35,
+        "diff_ewma_ci_95": [
+          -0.18,
+          1.0
+        ],
+        "snaive_policy": "SeasonalNaive",
+        "snaive_saved_pct": 73.49,
+        "snaive_ci_95": [
+          71.17,
+          75.84
+        ],
+        "diff_snaive_mean": 3.87,
+        "diff_snaive_ci_95": [
+          3.13,
+          4.75
+        ],
         "rm48_policy": "RollingMax48",
         "rm48_saved_pct": 72.5,
         "rm48_ci_95": [
@@ -43,14 +65,25 @@
         "diff_p99_ci_95": [
           1.04,
           2.99
+        ],
+        "fleet_p99_policy": "FleetPercentile99",
+        "fleet_p99_saved_pct": 39.64,
+        "fleet_p99_ci_95": [
+          37.22,
+          41.94
+        ],
+        "diff_fleet_p99_mean": 37.72,
+        "diff_fleet_p99_ci_95": [
+          34.79,
+          40.86
         ]
       }
     },
     "H2_validation_margin_calibratability": {
       "verdict": "SUPPORTED",
       "exceeded_2x_count": 15,
-      "total_checks": 90,
-      "share_exceeded_2x": 16.67
+      "total_checks": 108,
+      "share_exceeded_2x": 13.89
     },
     "H3_ml_generalization_unseen_apps": {
       "verdict": "NOT SUPPORTED",
@@ -74,6 +107,28 @@
         ],
         "cis_overlap": true,
         "ml_strictly_superior": false,
+        "ewma_policy": "EWMA",
+        "ewma_saved_pct": 80.83,
+        "ewma_ci_95": [
+          77.08,
+          84.64
+        ],
+        "diff_ewma_mean": -0.04,
+        "diff_ewma_ci_95": [
+          -1.03,
+          1.03
+        ],
+        "snaive_policy": "SeasonalNaive",
+        "snaive_saved_pct": 77.89,
+        "snaive_ci_95": [
+          73.79,
+          82.06
+        ],
+        "diff_snaive_mean": 2.89,
+        "diff_snaive_ci_95": [
+          1.59,
+          4.23
+        ],
         "rm48_policy": "RollingMax48",
         "rm48_saved_pct": 78.0,
         "rm48_ci_95": [
@@ -86,13 +141,24 @@
           3.86
         ],
         "p99_policy": "Percentile99",
-        "p99_saved_pct": 23.12,
+        "p99_saved_pct": 0.0,
         "p99_ci_95": [
+          0.0,
+          0.0
+        ],
+        "diff_p99_mean": 80.86,
+        "diff_p99_ci_95": [
+          77.89,
+          83.71
+        ],
+        "fleet_p99_policy": "FleetPercentile99",
+        "fleet_p99_saved_pct": 23.12,
+        "fleet_p99_ci_95": [
           16.57,
           28.93
         ],
-        "diff_p99_mean": 57.91,
-        "diff_p99_ci_95": [
+        "diff_fleet_p99_mean": 57.91,
+        "diff_fleet_p99_ci_95": [
           51.8,
           64.51
         ]
@@ -117,6 +183,28 @@
         ],
         "cis_overlap": true,
         "ml_strictly_superior": false,
+        "ewma_policy": "EWMA",
+        "ewma_saved_pct": 78.85,
+        "ewma_ci_95": [
+          74.85,
+          82.98
+        ],
+        "diff_ewma_mean": 0.35,
+        "diff_ewma_ci_95": [
+          -0.67,
+          1.4
+        ],
+        "snaive_policy": "SeasonalNaive",
+        "snaive_saved_pct": 76.01,
+        "snaive_ci_95": [
+          71.6,
+          80.62
+        ],
+        "diff_snaive_mean": 3.19,
+        "diff_snaive_ci_95": [
+          1.72,
+          4.67
+        ],
         "rm48_policy": "RollingMax48",
         "rm48_saved_pct": 75.44,
         "rm48_ci_95": [
@@ -129,13 +217,24 @@
           5.09
         ],
         "p99_policy": "Percentile99",
-        "p99_saved_pct": 25.24,
+        "p99_saved_pct": 0.0,
         "p99_ci_95": [
+          0.0,
+          0.0
+        ],
+        "diff_p99_mean": 79.29,
+        "diff_p99_ci_95": [
+          76.11,
+          82.48
+        ],
+        "fleet_p99_policy": "FleetPercentile99",
+        "fleet_p99_saved_pct": 25.24,
+        "fleet_p99_ci_95": [
           18.9,
           30.88
         ],
-        "diff_p99_mean": 54.21,
-        "diff_p99_ci_95": [
+        "diff_fleet_p99_mean": 54.21,
+        "diff_fleet_p99_ci_95": [
           47.82,
           60.92
         ]
@@ -163,6 +262,28 @@
       ],
       "cis_overlap": true,
       "ml_strictly_superior": true,
+      "ewma_policy": "EWMA",
+      "ewma_saved_pct": 77.0,
+      "ewma_ci_95": [
+        74.98,
+        79.05
+      ],
+      "diff_ewma_mean": 0.35,
+      "diff_ewma_ci_95": [
+        -0.18,
+        1.0
+      ],
+      "snaive_policy": "SeasonalNaive",
+      "snaive_saved_pct": 73.49,
+      "snaive_ci_95": [
+        71.17,
+        75.84
+      ],
+      "diff_snaive_mean": 3.87,
+      "diff_snaive_ci_95": [
+        3.13,
+        4.75
+      ],
       "rm48_policy": "RollingMax48",
       "rm48_saved_pct": 72.5,
       "rm48_ci_95": [
@@ -184,6 +305,17 @@
       "diff_p99_ci_95": [
         1.04,
         2.99
+      ],
+      "fleet_p99_policy": "FleetPercentile99",
+      "fleet_p99_saved_pct": 39.64,
+      "fleet_p99_ci_95": [
+        37.22,
+        41.94
+      ],
+      "diff_fleet_p99_mean": 37.72,
+      "diff_fleet_p99_ci_95": [
+        34.79,
+        40.86
       ]
     },
     "APP": {
@@ -206,6 +338,28 @@
       ],
       "cis_overlap": true,
       "ml_strictly_superior": false,
+      "ewma_policy": "EWMA",
+      "ewma_saved_pct": 80.83,
+      "ewma_ci_95": [
+        77.08,
+        84.64
+      ],
+      "diff_ewma_mean": -0.04,
+      "diff_ewma_ci_95": [
+        -1.03,
+        1.03
+      ],
+      "snaive_policy": "SeasonalNaive",
+      "snaive_saved_pct": 77.89,
+      "snaive_ci_95": [
+        73.79,
+        82.06
+      ],
+      "diff_snaive_mean": 2.89,
+      "diff_snaive_ci_95": [
+        1.59,
+        4.23
+      ],
       "rm48_policy": "RollingMax48",
       "rm48_saved_pct": 78.0,
       "rm48_ci_95": [
@@ -218,13 +372,24 @@
         3.86
       ],
       "p99_policy": "Percentile99",
-      "p99_saved_pct": 23.12,
+      "p99_saved_pct": 0.0,
       "p99_ci_95": [
+        0.0,
+        0.0
+      ],
+      "diff_p99_mean": 80.86,
+      "diff_p99_ci_95": [
+        77.89,
+        83.71
+      ],
+      "fleet_p99_policy": "FleetPercentile99",
+      "fleet_p99_saved_pct": 23.12,
+      "fleet_p99_ci_95": [
         16.57,
         28.93
       ],
-      "diff_p99_mean": 57.91,
-      "diff_p99_ci_95": [
+      "diff_fleet_p99_mean": 57.91,
+      "diff_fleet_p99_ci_95": [
         51.8,
         64.51
       ]
@@ -249,6 +414,28 @@
       ],
       "cis_overlap": true,
       "ml_strictly_superior": false,
+      "ewma_policy": "EWMA",
+      "ewma_saved_pct": 78.85,
+      "ewma_ci_95": [
+        74.85,
+        82.98
+      ],
+      "diff_ewma_mean": 0.35,
+      "diff_ewma_ci_95": [
+        -0.67,
+        1.4
+      ],
+      "snaive_policy": "SeasonalNaive",
+      "snaive_saved_pct": 76.01,
+      "snaive_ci_95": [
+        71.6,
+        80.62
+      ],
+      "diff_snaive_mean": 3.19,
+      "diff_snaive_ci_95": [
+        1.72,
+        4.67
+      ],
       "rm48_policy": "RollingMax48",
       "rm48_saved_pct": 75.44,
       "rm48_ci_95": [
@@ -261,13 +448,24 @@
         5.09
       ],
       "p99_policy": "Percentile99",
-      "p99_saved_pct": 25.24,
+      "p99_saved_pct": 0.0,
       "p99_ci_95": [
+        0.0,
+        0.0
+      ],
+      "diff_p99_mean": 79.29,
+      "diff_p99_ci_95": [
+        76.11,
+        82.48
+      ],
+      "fleet_p99_policy": "FleetPercentile99",
+      "fleet_p99_saved_pct": 25.24,
+      "fleet_p99_ci_95": [
         18.9,
         30.88
       ],
-      "diff_p99_mean": 54.21,
-      "diff_p99_ci_95": [
+      "diff_fleet_p99_mean": 54.21,
+      "diff_fleet_p99_ci_95": [
         47.82,
         60.92
       ]
@@ -505,6 +703,69 @@
             "share_c_any_viol": 73.11,
             "longest_consec_viol": 9,
             "mean_throttling_factor": 7.84
+          }
+        },
+        "FleetPeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": -376.57,
+          "test_violation": 0.0,
+          "test_saved_pct": -376.55,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": -376.55,
+            "wastage_pct": 464.84,
+            "mae": 23.41,
+            "mse": 548.7217,
+            "rmse": 23.4248,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "FleetPercentile95": {
+          "chosen_margin": 1.05,
+          "val_violation": 0.0453,
+          "val_saved_pct": 64.97,
+          "test_violation": 0.0547,
+          "test_saved_pct": 64.97,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0547,
+            "saved_pct": 64.97,
+            "wastage_pct": 23.31,
+            "mae": 1.213,
+            "mse": 1.8796,
+            "rmse": 1.371,
+            "mean_shortfall": 0.2747,
+            "p95_shortfall": 0.5991,
+            "share_c_any_viol": 24.53,
+            "longest_consec_viol": 79,
+            "mean_throttling_factor": 1.59
+          }
+        },
+        "FleetPercentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0083,
+          "val_saved_pct": 39.63,
+          "test_violation": 0.0107,
+          "test_saved_pct": 39.64,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0107,
+            "saved_pct": 39.64,
+            "wastage_pct": 48.65,
+            "mae": 2.4913,
+            "mse": 6.6941,
+            "rmse": 2.5873,
+            "mean_shortfall": 0.2386,
+            "p95_shortfall": 0.7529,
+            "share_c_any_viol": 8.02,
+            "longest_consec_viol": 73,
+            "mean_throttling_factor": 1.63
           }
         },
         "PeakOfTraining": {
@@ -824,6 +1085,69 @@
             "mean_throttling_factor": 11.34
           }
         },
+        "FleetPeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": -376.57,
+          "test_violation": 0.0,
+          "test_saved_pct": -376.55,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": -376.55,
+            "wastage_pct": 464.84,
+            "mae": 23.41,
+            "mse": 548.7217,
+            "rmse": 23.4248,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "FleetPercentile95": {
+          "chosen_margin": 1.75,
+          "val_violation": 0.0098,
+          "val_saved_pct": 41.62,
+          "test_violation": 0.0125,
+          "test_saved_pct": 41.62,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0125,
+            "saved_pct": 41.62,
+            "wastage_pct": 46.66,
+            "mae": 1.213,
+            "mse": 1.8796,
+            "rmse": 1.371,
+            "mean_shortfall": 0.2292,
+            "p95_shortfall": 0.7069,
+            "share_c_any_viol": 9.16,
+            "longest_consec_viol": 73,
+            "mean_throttling_factor": 1.59
+          }
+        },
+        "FleetPercentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0083,
+          "val_saved_pct": 39.63,
+          "test_violation": 0.0107,
+          "test_saved_pct": 39.64,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0107,
+            "saved_pct": 39.64,
+            "wastage_pct": 48.65,
+            "mae": 2.4913,
+            "mse": 6.6941,
+            "rmse": 2.5873,
+            "mean_shortfall": 0.2386,
+            "p95_shortfall": 0.7529,
+            "share_c_any_viol": 8.02,
+            "longest_consec_viol": 73,
+            "mean_throttling_factor": 1.63
+          }
+        },
         "PeakOfTraining": {
           "chosen_margin": 1.0,
           "val_violation": 0.0086,
@@ -1139,6 +1463,69 @@
             "share_c_any_viol": 59.03,
             "longest_consec_viol": 8,
             "mean_throttling_factor": 11.34
+          }
+        },
+        "FleetPeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": -376.57,
+          "test_violation": 0.0,
+          "test_saved_pct": -376.55,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": -376.55,
+            "wastage_pct": 464.84,
+            "mae": 23.41,
+            "mse": 548.7217,
+            "rmse": 23.4248,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "FleetPercentile95": {
+          "chosen_margin": 2.0,
+          "val_violation": 0.006,
+          "val_saved_pct": 33.28,
+          "test_violation": 0.0073,
+          "test_saved_pct": 33.28,
+          "exceeds_2x_target": true,
+          "full_metrics": {
+            "violation_rate": 0.0073,
+            "saved_pct": 33.28,
+            "wastage_pct": 55.0,
+            "mae": 1.213,
+            "mse": 1.8796,
+            "rmse": 1.371,
+            "mean_shortfall": 0.2564,
+            "p95_shortfall": 0.8303,
+            "share_c_any_viol": 5.59,
+            "longest_consec_viol": 73,
+            "mean_throttling_factor": 1.72
+          }
+        },
+        "FleetPercentile99": {
+          "chosen_margin": 2.0,
+          "val_violation": 0.0013,
+          "val_saved_pct": -20.73,
+          "test_violation": 0.0013,
+          "test_saved_pct": -20.73,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0013,
+            "saved_pct": -20.73,
+            "wastage_pct": 109.01,
+            "mae": 2.4913,
+            "mse": 6.6941,
+            "rmse": 2.5873,
+            "mean_shortfall": 0.4213,
+            "p95_shortfall": 0.7467,
+            "share_c_any_viol": 0.88,
+            "longest_consec_viol": 37,
+            "mean_throttling_factor": 2.23
           }
         },
         "PeakOfTraining": {
@@ -1460,7 +1847,7 @@
             "mean_throttling_factor": 15.33
           }
         },
-        "PeakOfTraining": {
+        "FleetPeakOfTraining": {
           "chosen_margin": 1.0,
           "val_violation": 0.0,
           "val_saved_pct": -371.17,
@@ -1481,7 +1868,7 @@
             "mean_throttling_factor": 1.0
           }
         },
-        "Percentile95": {
+        "FleetPercentile95": {
           "chosen_margin": 1.15,
           "val_violation": 0.0471,
           "val_saved_pct": 60.26,
@@ -1502,7 +1889,7 @@
             "mean_throttling_factor": 1.56
           }
         },
-        "Percentile99": {
+        "FleetPercentile99": {
           "chosen_margin": 1.0,
           "val_violation": 0.0222,
           "val_saved_pct": 43.46,
@@ -1521,6 +1908,69 @@
             "share_c_any_viol": 13.96,
             "longest_consec_viol": 290,
             "mean_throttling_factor": 1.4
+          }
+        },
+        "PeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile95": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
           }
         },
         "Static": {
@@ -1777,7 +2227,7 @@
             "mean_throttling_factor": 26.62
           }
         },
-        "PeakOfTraining": {
+        "FleetPeakOfTraining": {
           "chosen_margin": 1.0,
           "val_violation": 0.0,
           "val_saved_pct": -371.17,
@@ -1798,7 +2248,7 @@
             "mean_throttling_factor": 1.0
           }
         },
-        "Percentile95": {
+        "FleetPercentile95": {
           "chosen_margin": 2.0,
           "val_violation": 0.0104,
           "val_saved_pct": 30.9,
@@ -1819,7 +2269,7 @@
             "mean_throttling_factor": 1.22
           }
         },
-        "Percentile99": {
+        "FleetPercentile99": {
           "chosen_margin": 1.3,
           "val_violation": 0.0082,
           "val_saved_pct": 26.5,
@@ -1838,6 +2288,69 @@
             "share_c_any_viol": 4.05,
             "longest_consec_viol": 290,
             "mean_throttling_factor": 1.15
+          }
+        },
+        "PeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile95": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
           }
         },
         "Static": {
@@ -2094,7 +2607,7 @@
             "mean_throttling_factor": 26.62
           }
         },
-        "PeakOfTraining": {
+        "FleetPeakOfTraining": {
           "chosen_margin": 1.0,
           "val_violation": 0.0,
           "val_saved_pct": -371.17,
@@ -2115,7 +2628,7 @@
             "mean_throttling_factor": 1.0
           }
         },
-        "Percentile95": {
+        "FleetPercentile95": {
           "chosen_margin": 2.0,
           "val_violation": 0.0104,
           "val_saved_pct": 30.9,
@@ -2136,7 +2649,7 @@
             "mean_throttling_factor": 1.22
           }
         },
-        "Percentile99": {
+        "FleetPercentile99": {
           "chosen_margin": 2.0,
           "val_violation": 0.0034,
           "val_saved_pct": -13.08,
@@ -2155,6 +2668,69 @@
             "share_c_any_viol": 0.9,
             "longest_consec_viol": 2,
             "mean_throttling_factor": 1.12
+          }
+        },
+        "PeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile95": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 90.35,
+            "mae": 4.3999,
+            "mse": 23.5655,
+            "rmse": 4.8544,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
           }
         },
         "Static": {
@@ -2413,7 +2989,7 @@
             "mean_throttling_factor": 14.85
           }
         },
-        "PeakOfTraining": {
+        "FleetPeakOfTraining": {
           "chosen_margin": 1.0,
           "val_violation": 0.0,
           "val_saved_pct": -371.16,
@@ -2434,7 +3010,7 @@
             "mean_throttling_factor": 1.0
           }
         },
-        "Percentile95": {
+        "FleetPercentile95": {
           "chosen_margin": 1.15,
           "val_violation": 0.0489,
           "val_saved_pct": 62.07,
@@ -2455,7 +3031,7 @@
             "mean_throttling_factor": 1.55
           }
         },
-        "Percentile99": {
+        "FleetPercentile99": {
           "chosen_margin": 1.0,
           "val_violation": 0.023,
           "val_saved_pct": 45.03,
@@ -2474,6 +3050,69 @@
             "share_c_any_viol": 7.66,
             "longest_consec_viol": 73,
             "mean_throttling_factor": 1.41
+          }
+        },
+        "PeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile95": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
           }
         },
         "Static": {
@@ -2730,7 +3369,7 @@
             "mean_throttling_factor": 26.95
           }
         },
-        "PeakOfTraining": {
+        "FleetPeakOfTraining": {
           "chosen_margin": 1.0,
           "val_violation": 0.0,
           "val_saved_pct": -371.16,
@@ -2751,7 +3390,7 @@
             "mean_throttling_factor": 1.0
           }
         },
-        "Percentile95": {
+        "FleetPercentile95": {
           "chosen_margin": 2.0,
           "val_violation": 0.0123,
           "val_saved_pct": 34.04,
@@ -2772,7 +3411,7 @@
             "mean_throttling_factor": 1.29
           }
         },
-        "Percentile99": {
+        "FleetPercentile99": {
           "chosen_margin": 1.3,
           "val_violation": 0.0086,
           "val_saved_pct": 28.54,
@@ -2791,6 +3430,69 @@
             "share_c_any_viol": 1.8,
             "longest_consec_viol": 73,
             "mean_throttling_factor": 1.21
+          }
+        },
+        "PeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile95": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
           }
         },
         "Static": {
@@ -3047,7 +3749,7 @@
             "mean_throttling_factor": 26.95
           }
         },
-        "PeakOfTraining": {
+        "FleetPeakOfTraining": {
           "chosen_margin": 1.0,
           "val_violation": 0.0,
           "val_saved_pct": -371.16,
@@ -3068,7 +3770,7 @@
             "mean_throttling_factor": 1.0
           }
         },
-        "Percentile95": {
+        "FleetPercentile95": {
           "chosen_margin": 2.0,
           "val_violation": 0.0123,
           "val_saved_pct": 34.04,
@@ -3089,7 +3791,7 @@
             "mean_throttling_factor": 1.29
           }
         },
-        "Percentile99": {
+        "FleetPercentile99": {
           "chosen_margin": 2.0,
           "val_violation": 0.0036,
           "val_saved_pct": -9.94,
@@ -3108,6 +3810,69 @@
             "share_c_any_viol": 0.9,
             "longest_consec_viol": 2,
             "mean_throttling_factor": 1.07
+          }
+        },
+        "PeakOfTraining": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile95": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
+          }
+        },
+        "Percentile99": {
+          "chosen_margin": 1.0,
+          "val_violation": 0.0,
+          "val_saved_pct": 0.0,
+          "test_violation": 0.0,
+          "test_saved_pct": 0.0,
+          "exceeds_2x_target": false,
+          "full_metrics": {
+            "violation_rate": 0.0,
+            "saved_pct": 0.0,
+            "wastage_pct": 89.25,
+            "mae": 4.3457,
+            "mse": 22.9909,
+            "rmse": 4.7949,
+            "mean_shortfall": 0.0,
+            "p95_shortfall": 0.0,
+            "share_c_any_viol": 0.0,
+            "longest_consec_viol": 0,
+            "mean_throttling_factor": 1.0
           }
         },
         "Static": {
