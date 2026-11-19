@@ -26,7 +26,35 @@ Cloud resource management requires allocating heterogeneous compute workloads (d
 
 ---
 
-## 2. Architecture & Design Decisions
+## 2. Architecture & System Design
+
+```
++-------------------------------------------------------------------------+
+|                              USER BROWSER                               |
+|                  https://cloud-pilot-gamma.vercel.app                   |
++-------------------------------------------------------------------------+
+                                    |
+                                    | HTTPS / REST (CORS-restricted)
+                                    v
++-------------------------------------------------------------------------+
+|                       RENDER PYTHON CONTROL PLANE                       |
+|                   https://cloudpilot-2whk.onrender.com                  |
+|                                                                         |
+|  - Zero-dependency ThreadingHTTPServer (Python standard library)        |
+|  - Security: Rate limiting per IP, API key auth, bounded inputs (Pydantic)|
+|  - Reliability: Semaphore-guarded simulation worker pool (max 2 jobs)   |
+|  - Health checks: /health (liveness) & /ready (Supabase readiness ping) |
+|  - Allocation Engines: FirstFit, BestFit, WorstFit, RoundRobin,         |
+|                        LinearAR ML Forecaster, UCB Contextual Bandit    |
++-------------------------------------------------------------------------+
+                                    |
+                                    | HTTPS REST with retry & backoff
+                                    v
++-------------------------------------------------------------------------+
+|                          SUPABASE POSTGRESQL                            |
+|             Persistence for simulation_runs & history telemetries       |
++-------------------------------------------------------------------------+
+```
 
 ### Directory Structure
 

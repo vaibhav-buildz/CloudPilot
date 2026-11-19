@@ -1,0 +1,6 @@
+[allowlist]
+description = "Allowlist test files and mock tokens in test suites"
+paths = [
+  '''tests/.*''',
+  '''\.venv/.*''',
+]
