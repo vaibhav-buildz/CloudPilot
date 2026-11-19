@@ -370,7 +370,21 @@ def evaluate_split_experiments(
     preds_val["EWMA"] = val_data["ewma_demand"].values
     preds_test["EWMA"] = test_data["ewma_demand"].values
 
-    # Peak and Percentile of Training
+    # Fleet-wide training statistics (consistent definition across all three splits)
+    g_peak = float(train_data["demand_cpu_ffill"].max())
+    g_p95 = float(train_data["demand_cpu_ffill"].quantile(0.95))
+    g_p99 = float(train_data["demand_cpu_ffill"].quantile(0.99))
+
+    preds_val["FleetPeakOfTraining"] = np.full(len(val_data), g_peak)
+    preds_test["FleetPeakOfTraining"] = np.full(len(test_data), g_peak)
+
+    preds_val["FleetPercentile95"] = np.full(len(val_data), g_p95)
+    preds_test["FleetPercentile95"] = np.full(len(test_data), g_p95)
+
+    preds_val["FleetPercentile99"] = np.full(len(val_data), g_p99)
+    preds_test["FleetPercentile99"] = np.full(len(test_data), g_p99)
+
+    # Per-container training statistics (in TIME: container's own training history; in APP/APP_TIME: unseen containers default to req_cpu_cores)
     if split_name == "TIME":
         peak_map = train_data.groupby("container_id")["demand_cpu_ffill"].max().to_dict()
         p95_map = train_data.groupby("container_id")["demand_cpu_ffill"].quantile(0.95).to_dict()
@@ -385,19 +399,15 @@ def evaluate_split_experiments(
         preds_val["Percentile99"] = val_data["container_id"].map(p99_map).fillna(val_data["req_cpu_cores"]).values
         preds_test["Percentile99"] = test_data["container_id"].map(p99_map).fillna(test_data["req_cpu_cores"]).values
     else:
-        # Fleet-wide training stats
-        g_peak = float(train_data["demand_cpu_ffill"].max())
-        g_p95 = float(train_data["demand_cpu_ffill"].quantile(0.95))
-        g_p99 = float(train_data["demand_cpu_ffill"].quantile(0.99))
+        # In APP and APP_TIME, containers are unseen in training; per-container training percentile falls back to request
+        preds_val["PeakOfTraining"] = val_data["req_cpu_cores"].values
+        preds_test["PeakOfTraining"] = test_data["req_cpu_cores"].values
 
-        preds_val["PeakOfTraining"] = np.full(len(val_data), g_peak)
-        preds_test["PeakOfTraining"] = np.full(len(test_data), g_peak)
+        preds_val["Percentile95"] = val_data["req_cpu_cores"].values
+        preds_test["Percentile95"] = test_data["req_cpu_cores"].values
 
-        preds_val["Percentile95"] = np.full(len(val_data), g_p95)
-        preds_test["Percentile95"] = np.full(len(test_data), g_p95)
-
-        preds_val["Percentile99"] = np.full(len(val_data), g_p99)
-        preds_test["Percentile99"] = np.full(len(test_data), g_p99)
+        preds_val["Percentile99"] = val_data["req_cpu_cores"].values
+        preds_test["Percentile99"] = test_data["req_cpu_cores"].values
 
     # Static & RuleThreshold
     preds_val["Static"] = req_val
@@ -568,7 +578,12 @@ def run_bootstrap_apps(
     req_v = test_df["req_cpu_cores"].values
 
     ml_names = ["LinearRegression", "DecisionTree", "RandomForest", "GradientBoosting", "GBR_quantile_95", "GBR_quantile_99"]
-    rule_names = ["Naive", "RollingMax48", "RollingP99_7d", "SeasonalNaive", "EWMA", "PeakOfTraining", "Percentile95", "Percentile99", "RuleThreshold"]
+    rule_names = [
+        "Naive", "RollingMax48", "RollingP99_7d", "SeasonalNaive", "EWMA",
+        "PeakOfTraining", "Percentile95", "Percentile99",
+        "FleetPeakOfTraining", "FleetPercentile95", "FleetPercentile99",
+        "RuleThreshold"
+    ]
 
     target_val = 0.01 if target_key == "target_1pct" else (0.05 if target_key == "target_5pct" else 0.001)
 
@@ -588,12 +603,21 @@ def run_bootstrap_apps(
     best_rule_saved = target_dict[best_rule_name]["test_saved_pct"]
     r_rule = target_dict[best_rule_name]["reserve_vector"]
 
-    # Comparative baselines: RollingMax48 and Percentile99
+    # Comparative baseline reserve vectors
+    r_ewma = target_dict["EWMA"]["reserve_vector"]
+    ewma_saved = target_dict["EWMA"]["test_saved_pct"]
+
+    r_snaive = target_dict["SeasonalNaive"]["reserve_vector"]
+    snaive_saved = target_dict["SeasonalNaive"]["test_saved_pct"]
+
     r_rm48 = target_dict["RollingMax48"]["reserve_vector"]
     rm48_saved = target_dict["RollingMax48"]["test_saved_pct"]
 
     r_p99 = target_dict["Percentile99"]["reserve_vector"]
     p99_saved = target_dict["Percentile99"]["test_saved_pct"]
+
+    r_fleet_p99 = target_dict["FleetPercentile99"]["reserve_vector"]
+    fleet_p99_saved = target_dict["FleetPercentile99"]["test_saved_pct"]
 
     unique_apps = test_df["app_du"].dropna().unique()
     app_indices = test_df.groupby("app_du").indices
@@ -601,40 +625,58 @@ def run_bootstrap_apps(
     app_req_sums = np.array([req_v[app_indices[a]].sum() for a in unique_apps])
     app_ml_sums = np.array([r_ml[app_indices[a]].sum() for a in unique_apps])
     app_rule_sums = np.array([r_rule[app_indices[a]].sum() for a in unique_apps])
+    app_ewma_sums = np.array([r_ewma[app_indices[a]].sum() for a in unique_apps])
+    app_snaive_sums = np.array([r_snaive[app_indices[a]].sum() for a in unique_apps])
     app_rm48_sums = np.array([r_rm48[app_indices[a]].sum() for a in unique_apps])
     app_p99_sums = np.array([r_p99[app_indices[a]].sum() for a in unique_apps])
+    app_fleet_p99_sums = np.array([r_fleet_p99[app_indices[a]].sum() for a in unique_apps])
 
     n_apps = len(unique_apps)
     rng_b = np.random.RandomState(42)
 
-    b_ml, b_rule, b_rm48, b_p99 = [], [], [], []
-    b_diff_rule, b_diff_rm48, b_diff_p99 = [], [], []
+    b_ml, b_rule, b_ewma, b_snaive, b_rm48, b_p99, b_fleet_p99 = [], [], [], [], [], [], []
+    b_diff_rule, b_diff_ewma, b_diff_snaive, b_diff_rm48, b_diff_p99, b_diff_fleet_p99 = [], [], [], [], [], []
 
     for _ in range(n_draws):
         idx = rng_b.choice(n_apps, size=n_apps, replace=True)
         sum_req = app_req_sums[idx].sum()
         s_ml = (1.0 - (app_ml_sums[idx].sum() / sum_req)) * 100.0
         s_rule = (1.0 - (app_rule_sums[idx].sum() / sum_req)) * 100.0
+        s_ewma = (1.0 - (app_ewma_sums[idx].sum() / sum_req)) * 100.0
+        s_snaive = (1.0 - (app_snaive_sums[idx].sum() / sum_req)) * 100.0
         s_rm48 = (1.0 - (app_rm48_sums[idx].sum() / sum_req)) * 100.0
         s_p99 = (1.0 - (app_p99_sums[idx].sum() / sum_req)) * 100.0
+        s_fleet_p99 = (1.0 - (app_fleet_p99_sums[idx].sum() / sum_req)) * 100.0
 
         b_ml.append(s_ml)
         b_rule.append(s_rule)
+        b_ewma.append(s_ewma)
+        b_snaive.append(s_snaive)
         b_rm48.append(s_rm48)
         b_p99.append(s_p99)
+        b_fleet_p99.append(s_fleet_p99)
 
         b_diff_rule.append(s_ml - s_rule)
+        b_diff_ewma.append(s_ml - s_ewma)
+        b_diff_snaive.append(s_ml - s_snaive)
         b_diff_rm48.append(s_ml - s_rm48)
         b_diff_p99.append(s_ml - s_p99)
+        b_diff_fleet_p99.append(s_ml - s_fleet_p99)
 
     ci_ml = [round(float(np.percentile(b_ml, 2.5)), 2), round(float(np.percentile(b_ml, 97.5)), 2)]
     ci_rule = [round(float(np.percentile(b_rule, 2.5)), 2), round(float(np.percentile(b_rule, 97.5)), 2)]
+    ci_ewma = [round(float(np.percentile(b_ewma, 2.5)), 2), round(float(np.percentile(b_ewma, 97.5)), 2)]
+    ci_snaive = [round(float(np.percentile(b_snaive, 2.5)), 2), round(float(np.percentile(b_snaive, 97.5)), 2)]
     ci_rm48 = [round(float(np.percentile(b_rm48, 2.5)), 2), round(float(np.percentile(b_rm48, 97.5)), 2)]
     ci_p99 = [round(float(np.percentile(b_p99, 2.5)), 2), round(float(np.percentile(b_p99, 97.5)), 2)]
+    ci_fleet_p99 = [round(float(np.percentile(b_fleet_p99, 2.5)), 2), round(float(np.percentile(b_fleet_p99, 97.5)), 2)]
 
     ci_diff_rule = [round(float(np.percentile(b_diff_rule, 2.5)), 2), round(float(np.percentile(b_diff_rule, 97.5)), 2)]
+    ci_diff_ewma = [round(float(np.percentile(b_diff_ewma, 2.5)), 2), round(float(np.percentile(b_diff_ewma, 97.5)), 2)]
+    ci_diff_snaive = [round(float(np.percentile(b_diff_snaive, 2.5)), 2), round(float(np.percentile(b_diff_snaive, 97.5)), 2)]
     ci_diff_rm48 = [round(float(np.percentile(b_diff_rm48, 2.5)), 2), round(float(np.percentile(b_diff_rm48, 97.5)), 2)]
     ci_diff_p99 = [round(float(np.percentile(b_diff_p99, 2.5)), 2), round(float(np.percentile(b_diff_p99, 97.5)), 2)]
+    ci_diff_fleet_p99 = [round(float(np.percentile(b_diff_fleet_p99, 2.5)), 2), round(float(np.percentile(b_diff_fleet_p99, 97.5)), 2)]
 
     overlap = not (ci_ml[1] < ci_rule[0] or ci_rule[1] < ci_ml[0])
     ml_strictly_superior = bool(ci_diff_rule[0] > 0)
@@ -650,7 +692,17 @@ def run_bootstrap_apps(
         "paired_diff_ci_95": ci_diff_rule,
         "cis_overlap": overlap,
         "ml_strictly_superior": ml_strictly_superior,
-        # Comparisons against RollingMax48 and Percentile99
+        # Comparative baselines
+        "ewma_policy": "EWMA",
+        "ewma_saved_pct": ewma_saved,
+        "ewma_ci_95": ci_ewma,
+        "diff_ewma_mean": round(float(np.mean(b_diff_ewma)), 2),
+        "diff_ewma_ci_95": ci_diff_ewma,
+        "snaive_policy": "SeasonalNaive",
+        "snaive_saved_pct": snaive_saved,
+        "snaive_ci_95": ci_snaive,
+        "diff_snaive_mean": round(float(np.mean(b_diff_snaive)), 2),
+        "diff_snaive_ci_95": ci_diff_snaive,
         "rm48_policy": "RollingMax48",
         "rm48_saved_pct": rm48_saved,
         "rm48_ci_95": ci_rm48,
@@ -661,6 +713,11 @@ def run_bootstrap_apps(
         "p99_ci_95": ci_p99,
         "diff_p99_mean": round(float(np.mean(b_diff_p99)), 2),
         "diff_p99_ci_95": ci_diff_p99,
+        "fleet_p99_policy": "FleetPercentile99",
+        "fleet_p99_saved_pct": fleet_p99_saved,
+        "fleet_p99_ci_95": ci_fleet_p99,
+        "diff_fleet_p99_mean": round(float(np.mean(b_diff_fleet_p99)), 2),
+        "diff_fleet_p99_ci_95": ci_diff_fleet_p99,
     }
 
 
@@ -876,18 +933,21 @@ def main():
     print(f"Total pipeline runtime: {total_time:.2f}s")
 
     # Print Summary Tables & Hypothesis Status
-    print("\n" + "=" * 110)
+    print("\n" + "=" * 175)
     print("GATE 3b SUMMARY: APP-LEVEL BOOTSTRAP AT 1% VIOLATION (VALIDATION-BASED SELECTION)")
-    print("=" * 110)
-    print(f"{'Split':<10} | {'Best ML [95% CI]':<26} | {'Best Rule [95% CI]':<26} | {'Diff vs Rule':<20} | {'Diff vs RM48':<20} | {'Diff vs P99':<20}")
-    print("-" * 135)
+    print("=" * 175)
+    print(f"{'Split':<10} | {'Best ML [95% CI]':<25} | {'Best Rule [95% CI]':<25} | {'Diff vs Rule':<18} | {'Diff vs EWMA':<18} | {'Diff vs SNaive':<18} | {'Diff vs RM48':<18} | {'Diff vs P99':<18} | {'Diff vs FleetP99':<18}")
+    print("-" * 175)
     for s_name, b in [("TIME", boot_time), ("APP", boot_app), ("APP_TIME", boot_app_time)]:
         ml_str = f"{b['best_ml_policy']} [{b['ml_ci_95'][0]}%, {b['ml_ci_95'][1]}%]"
         rule_str = f"{b['best_rule_policy']} [{b['rule_ci_95'][0]}%, {b['rule_ci_95'][1]}%]"
         diff_rule_str = f"{b['paired_diff_mean']:+.2f}% [{b['paired_diff_ci_95'][0]:+.2f}%, {b['paired_diff_ci_95'][1]:+.2f}%]"
+        diff_ewma_str = f"{b['diff_ewma_mean']:+.2f}% [{b['diff_ewma_ci_95'][0]:+.2f}%, {b['diff_ewma_ci_95'][1]:+.2f}%]"
+        diff_snaive_str = f"{b['diff_snaive_mean']:+.2f}% [{b['diff_snaive_ci_95'][0]:+.2f}%, {b['diff_snaive_ci_95'][1]:+.2f}%]"
         diff_rm48_str = f"{b['diff_rm48_mean']:+.2f}% [{b['diff_rm48_ci_95'][0]:+.2f}%, {b['diff_rm48_ci_95'][1]:+.2f}%]"
         diff_p99_str = f"{b['diff_p99_mean']:+.2f}% [{b['diff_p99_ci_95'][0]:+.2f}%, {b['diff_p99_ci_95'][1]:+.2f}%]"
-        print(f"{s_name:<10} | {ml_str:<26} | {rule_str:<26} | {diff_rule_str:<20} | {diff_rm48_str:<20} | {diff_p99_str:<20}")
+        diff_fp99_str = f"{b['diff_fleet_p99_mean']:+.2f}% [{b['diff_fleet_p99_ci_95'][0]:+.2f}%, {b['diff_fleet_p99_ci_95'][1]:+.2f}%]"
+        print(f"{s_name:<10} | {ml_str:<25} | {rule_str:<25} | {diff_rule_str:<18} | {diff_ewma_str:<18} | {diff_snaive_str:<18} | {diff_rm48_str:<18} | {diff_p99_str:<18} | {diff_fp99_str:<18}")
 
     print("\n" + "=" * 110)
     print("PRE-REGISTERED HYPOTHESES VERDICTS")
