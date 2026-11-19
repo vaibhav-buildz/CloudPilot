@@ -111,30 +111,46 @@ Generated automatically by `scripts/gate3b.py` from `results/gate3b.json`. Zero 
 
 ---
 
+## Table 2b: Paired 500-Draw Bootstrap: Point-ML GradientBoosting vs Rules at 1.0% Target
+
+| Split | Comparison | GB Margin | GB Test Viol (%) | Rule Margin | Rule Test Viol (%) | GB Saved (%) [95% CI] | Rule Saved (%) [95% CI] | Paired Diff (GB - Rule) [95% CI] | Diff Spans 0? |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| TIME | `GradientBoosting vs RollingMax48` | 2.30 | 1.18% | 1.20 | 0.85% | 73.81% [71.51%, 76.1%] | 72.50% [70.4%, 74.44%] | +1.31% [+0.29%, +2.45%] | **No** |
+| TIME | `GradientBoosting vs RollingP99_7d` | 2.30 | 1.18% | 1.10 | 1.27% | 73.81% [71.51%, 76.1%] | 75.94% [73.93%, 77.93%] | -2.12% [-3.14%, -1.12%] | **No** |
+| TIME | `GradientBoosting vs EWMA` | 2.30 | 1.18% | 2.95 | 1.13% | 73.81% [71.51%, 76.1%] | 66.08% [63.09%, 69.09%] | +7.74% [+6.97%, +8.48%] | **No** |
+| APP | `GradientBoosting vs RollingMax48` | 2.10 | 1.22% | 1.15 | 0.94% | 79.74% [76.11%, 83.54%] | 78.00% [74.51%, 81.59%] | +1.73% [+0.58%, +2.82%] | **No** |
+| APP | `GradientBoosting vs RollingP99_7d` | 2.10 | 1.22% | 1.10 | 1.02% | 79.74% [76.11%, 83.54%] | 80.32% [76.89%, 83.95%] | -0.58% [-1.70%, +0.57%] | Yes |
+| APP | `GradientBoosting vs EWMA` | 2.10 | 1.22% | 2.60 | 1.26% | 79.74% [76.11%, 83.54%] | 75.08% [70.2%, 80.03%] | +4.64% [+3.55%, +5.88%] | **No** |
+| APP_TIME | `GradientBoosting vs RollingMax48` | 2.10 | 1.74% | 1.15 | 1.13% | 77.91% [73.86%, 82.04%] | 75.44% [71.81%, 79.28%] | +2.44% [+0.56%, +4.19%] | **No** |
+| APP_TIME | `GradientBoosting vs RollingP99_7d` | 2.10 | 1.74% | 1.10 | 1.47% | 77.91% [73.86%, 82.04%] | 79.33% [75.88%, 83.11%] | -1.42% [-2.82%, -0.10%] | **No** |
+| APP_TIME | `GradientBoosting vs EWMA` | 2.10 | 1.74% | 2.55 | 1.71% | 77.91% [73.86%, 82.04%] | 73.03% [67.93%, 78.29%] | +4.86% [+3.73%, +5.98%] | **No** |
+
+---
+
 ## Table 3: Hypothesis 2 (H2) Generalization Breakdown (135 Core Checks)
 
-### A. Breakdown by Target
+### A. Breakdown by Target (Raw vs. Conditional on Validation Feasibility)
 
-| Target | 2x Test Violation Limit | Total Checks | Exceeded 2x Test Limit | Met Validation Target | True Generalization Failures | True Failure Rate among Feasible |
+| Target | 2x Test Limit | Total Active Checks | Exceeded 2x (Raw) | Raw Failure Rate (%) | Met Val Target | Exceeded 2x among Val-Feasible | Conditional Failure Rate (%) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **5.0%** | <= 10.0% | 42 | 0 | 0.0% | 42 | 0 | 0.0% |
+| **1.0%** | <= 2.0% | 42 | 4 | 9.5% | 40 | 3 | 7.5% |
+| **0.1%** | <= 0.20% | 42 | 23 | 54.8% | 20 | 4 | 20.0% |
+
+### B. Breakdown by Split (Raw vs. Conditional on Validation Feasibility)
+
+| Split | Total Active Checks | Exceeded 2x (Raw) | Raw Failure Rate (%) | Met Val Target | Exceeded 2x among Val-Feasible | Conditional Failure Rate (%) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **5.0%** | <= 10.0% | 42 | 0 | 42 | 0 | 0.0% |
-| **1.0%** | <= 2.0% | 42 | 4 | 40 | 3 | 7.5% |
-| **0.1%** | <= 0.20% | 42 | 23 | 20 | 4 | 20.0% |
-
-### B. Breakdown by Split
-
-| Split | Total Checks | Exceeded 2x Test Limit | Met Validation Target | True Generalization Failures | True Failure Rate among Feasible |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **TIME** | 42 | 13 | 33 | 6 | 18.2% |
-| **APP** | 42 | 6 | 35 | 0 | 0.0% |
-| **APP_TIME** | 42 | 8 | 34 | 1 | 2.9% |
+| **TIME** | 42 | 13 | 31.0% | 33 | 6 | 18.2% |
+| **APP** | 42 | 6 | 14.3% | 35 | 0 | 0.0% |
+| **APP_TIME** | 42 | 8 | 19.0% | 34 | 1 | 2.9% |
 
 ### C. Overall Generalization Summary
 
-- **Total Checks**: 126 (15 core policies x 3 targets x 3 splits)
-- **Raw Test Exceedances (> 2x target)**: 27 / 126 (21.4%)
-- **Policies Meeting Validation Target**: 102 / 126 (81.0%)
-- **True Generalization Failures (met val <= target, but test > 2x target)**: **7 / 102** (6.9%)
+- **Total Checks**: 126 (15 core policies x 3 targets x 3 splits across 126 active test series)
+- **Raw Test Exceedances (> 2x target, As Written in Pre-Registration)**: **27 / 126** (21.4%) -> **H2 NOT SUPPORTED as written**
+- **Policies Meeting Validation Target (Feasible)**: 102 / 126 (81.0%)
+- **Conditional True Generalization Failures (met val <= target, but test > 2x target)**: **7 / 102** (6.9%) -> **Secondary Finding: 93.1% Calibration Fidelity**
 
 ---
 
