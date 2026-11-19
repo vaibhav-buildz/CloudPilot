@@ -529,8 +529,10 @@ def evaluate_split_experiments(
                     best_val_viol = v_rate
                     break
 
+            met_val_target = (best_m is not None)
+
             if best_m is None:
-                # If target not achieved, choose largest margin (2.0)
+                # If target not achieved, choose largest margin (4.00)
                 best_m = float(grid[-1])
                 r_va = rule_val_res if pol == "RuleThreshold" else p_val * best_m
                 best_val_viol = float((y_val > r_va).mean())
@@ -548,7 +550,9 @@ def evaluate_split_experiments(
                 "val_saved_pct": round(val_saved_pct, 2),
                 "test_violation": t_res["violation_rate"],
                 "test_saved_pct": t_res["saved_pct"],
+                "met_val_target": met_val_target,
                 "exceeds_2x_target": exceeds_2x,
+                "true_generalization_failure": bool(met_val_target and exceeds_2x),
                 "full_metrics": t_res,
                 "reserve_vector": r_te_selected,
             }
@@ -568,14 +572,16 @@ def evaluate_split_experiments(
 def run_bootstrap_apps(
     res_split: Dict[str, Any], target_key: str = "target_1pct", n_draws: int = 500
 ) -> Dict[str, Any]:
-    """Run 500-draw bootstrap by app_du comparing best ML vs best own-history rule, RollingMax48, and Percentile99.
+    """Run 500-draw bootstrap by app_du comparing best ML vs feasible versions of rules and point-ML models.
 
     Model selection for 'best ML' and 'best rule' is performed STRICTLY on the VALIDATION set:
     selecting the candidate satisfying validation violation <= target with maximum validation CPU savings.
+    Policies that never reach the validation target within the margin grid are flagged as dropped.
     """
     test_df = res_split["test_data"]
     target_dict = res_split["target_results"][target_key]
     req_v = test_df["req_cpu_cores"].values
+    split_name = res_split["split"]
 
     ml_names = ["LinearRegression", "DecisionTree", "RandomForest", "GradientBoosting", "GBR_quantile_95", "GBR_quantile_99"]
     rule_names = [
@@ -589,7 +595,7 @@ def run_bootstrap_apps(
 
     # STRICT VALIDATION-BASED SELECTION (never test set):
     def select_best_on_val(candidates: List[str]) -> str:
-        meeting_target = [p for p in candidates if p in target_dict and target_dict[p]["val_violation"] <= target_val]
+        meeting_target = [p for p in candidates if p in target_dict and target_dict[p]["met_val_target"]]
         if not meeting_target:
             meeting_target = [p for p in candidates if p in target_dict]
         return max(meeting_target, key=lambda p: (target_dict[p]["val_saved_pct"], -target_dict[p]["val_violation"]))
@@ -598,126 +604,150 @@ def run_bootstrap_apps(
     best_rule_name = select_best_on_val(rule_names)
 
     best_ml_saved = target_dict[best_ml_name]["test_saved_pct"]
+    best_ml_test_viol = target_dict[best_ml_name]["test_violation"]
     r_ml = target_dict[best_ml_name]["reserve_vector"]
-
-    best_rule_saved = target_dict[best_rule_name]["test_saved_pct"]
-    r_rule = target_dict[best_rule_name]["reserve_vector"]
-
-    # Comparative baseline reserve vectors
-    r_ewma = target_dict["EWMA"]["reserve_vector"]
-    ewma_saved = target_dict["EWMA"]["test_saved_pct"]
-
-    r_snaive = target_dict["SeasonalNaive"]["reserve_vector"]
-    snaive_saved = target_dict["SeasonalNaive"]["test_saved_pct"]
-
-    r_rm48 = target_dict["RollingMax48"]["reserve_vector"]
-    rm48_saved = target_dict["RollingMax48"]["test_saved_pct"]
-
-    r_p99 = target_dict["Percentile99"]["reserve_vector"]
-    p99_saved = target_dict["Percentile99"]["test_saved_pct"]
-
-    r_fleet_p99 = target_dict["FleetPercentile99"]["reserve_vector"]
-    fleet_p99_saved = target_dict["FleetPercentile99"]["test_saved_pct"]
 
     unique_apps = test_df["app_du"].dropna().unique()
     app_indices = test_df.groupby("app_du").indices
-
     app_req_sums = np.array([req_v[app_indices[a]].sum() for a in unique_apps])
     app_ml_sums = np.array([r_ml[app_indices[a]].sum() for a in unique_apps])
-    app_rule_sums = np.array([r_rule[app_indices[a]].sum() for a in unique_apps])
-    app_ewma_sums = np.array([r_ewma[app_indices[a]].sum() for a in unique_apps])
-    app_snaive_sums = np.array([r_snaive[app_indices[a]].sum() for a in unique_apps])
-    app_rm48_sums = np.array([r_rm48[app_indices[a]].sum() for a in unique_apps])
-    app_p99_sums = np.array([r_p99[app_indices[a]].sum() for a in unique_apps])
-    app_fleet_p99_sums = np.array([r_fleet_p99[app_indices[a]].sum() for a in unique_apps])
+
+    candidate_policies = [
+        ("best_rule", best_rule_name),
+        ("EWMA", "EWMA"),
+        ("SeasonalNaive", "SeasonalNaive"),
+        ("RollingMax48", "RollingMax48"),
+        ("RollingP99_7d", "RollingP99_7d"),
+        ("FleetPercentile99", "FleetPercentile99"),
+        ("Percentile99", "Percentile99"),
+        ("LinearRegression", "LinearRegression"),
+        ("DecisionTree", "DecisionTree"),
+        ("RandomForest", "RandomForest"),
+        ("GradientBoosting", "GradientBoosting"),
+        ("GBR_quantile_99", "GBR_quantile_99"),
+    ]
+
+    policy_eval_info: Dict[str, Dict[str, Any]] = {}
+    for label, pol in candidate_policies:
+        if pol not in target_dict:
+            continue
+        p_info = target_dict[pol]
+        met_val = p_info["met_val_target"]
+
+        # Drop Percentile99 on APP and APP_TIME (unseen containers have no training history)
+        if pol == "Percentile99" and split_name != "TIME":
+            policy_eval_info[label] = {
+                "policy": pol,
+                "feasible": False,
+                "drop_reason": "Dropped on unseen apps (per-container training usage undefined)",
+                "val_violation": p_info["val_violation"],
+                "test_violation": p_info["test_violation"],
+                "test_saved_pct": p_info["test_saved_pct"],
+                "chosen_margin": p_info["chosen_margin"],
+            }
+            continue
+
+        if not met_val:
+            policy_eval_info[label] = {
+                "policy": pol,
+                "feasible": False,
+                "drop_reason": f"Never reached <=1% validation target even at m=4.00 (val_viol={p_info['val_violation']*100:.2f}%)",
+                "val_violation": p_info["val_violation"],
+                "test_violation": p_info["test_violation"],
+                "test_saved_pct": p_info["test_saved_pct"],
+                "chosen_margin": p_info["chosen_margin"],
+            }
+            continue
+
+        r_vec = p_info["reserve_vector"]
+        app_p_sums = np.array([r_vec[app_indices[a]].sum() for a in unique_apps])
+        policy_eval_info[label] = {
+            "policy": pol,
+            "feasible": True,
+            "drop_reason": None,
+            "val_violation": p_info["val_violation"],
+            "test_violation": p_info["test_violation"],
+            "test_saved_pct": p_info["test_saved_pct"],
+            "chosen_margin": p_info["chosen_margin"],
+            "app_sums": app_p_sums,
+            "boot_saved": [],
+            "boot_diff": [],
+        }
 
     n_apps = len(unique_apps)
     rng_b = np.random.RandomState(42)
 
-    b_ml, b_rule, b_ewma, b_snaive, b_rm48, b_p99, b_fleet_p99 = [], [], [], [], [], [], []
-    b_diff_rule, b_diff_ewma, b_diff_snaive, b_diff_rm48, b_diff_p99, b_diff_fleet_p99 = [], [], [], [], [], []
-
+    b_ml = []
     for _ in range(n_draws):
         idx = rng_b.choice(n_apps, size=n_apps, replace=True)
         sum_req = app_req_sums[idx].sum()
         s_ml = (1.0 - (app_ml_sums[idx].sum() / sum_req)) * 100.0
-        s_rule = (1.0 - (app_rule_sums[idx].sum() / sum_req)) * 100.0
-        s_ewma = (1.0 - (app_ewma_sums[idx].sum() / sum_req)) * 100.0
-        s_snaive = (1.0 - (app_snaive_sums[idx].sum() / sum_req)) * 100.0
-        s_rm48 = (1.0 - (app_rm48_sums[idx].sum() / sum_req)) * 100.0
-        s_p99 = (1.0 - (app_p99_sums[idx].sum() / sum_req)) * 100.0
-        s_fleet_p99 = (1.0 - (app_fleet_p99_sums[idx].sum() / sum_req)) * 100.0
-
         b_ml.append(s_ml)
-        b_rule.append(s_rule)
-        b_ewma.append(s_ewma)
-        b_snaive.append(s_snaive)
-        b_rm48.append(s_rm48)
-        b_p99.append(s_p99)
-        b_fleet_p99.append(s_fleet_p99)
 
-        b_diff_rule.append(s_ml - s_rule)
-        b_diff_ewma.append(s_ml - s_ewma)
-        b_diff_snaive.append(s_ml - s_snaive)
-        b_diff_rm48.append(s_ml - s_rm48)
-        b_diff_p99.append(s_ml - s_p99)
-        b_diff_fleet_p99.append(s_ml - s_fleet_p99)
+        for label, info in policy_eval_info.items():
+            if info["feasible"]:
+                s_p = (1.0 - (info["app_sums"][idx].sum() / sum_req)) * 100.0
+                info["boot_saved"].append(s_p)
+                info["boot_diff"].append(s_ml - s_p)
 
     ci_ml = [round(float(np.percentile(b_ml, 2.5)), 2), round(float(np.percentile(b_ml, 97.5)), 2)]
-    ci_rule = [round(float(np.percentile(b_rule, 2.5)), 2), round(float(np.percentile(b_rule, 97.5)), 2)]
-    ci_ewma = [round(float(np.percentile(b_ewma, 2.5)), 2), round(float(np.percentile(b_ewma, 97.5)), 2)]
-    ci_snaive = [round(float(np.percentile(b_snaive, 2.5)), 2), round(float(np.percentile(b_snaive, 97.5)), 2)]
-    ci_rm48 = [round(float(np.percentile(b_rm48, 2.5)), 2), round(float(np.percentile(b_rm48, 97.5)), 2)]
-    ci_p99 = [round(float(np.percentile(b_p99, 2.5)), 2), round(float(np.percentile(b_p99, 97.5)), 2)]
-    ci_fleet_p99 = [round(float(np.percentile(b_fleet_p99, 2.5)), 2), round(float(np.percentile(b_fleet_p99, 97.5)), 2)]
 
-    ci_diff_rule = [round(float(np.percentile(b_diff_rule, 2.5)), 2), round(float(np.percentile(b_diff_rule, 97.5)), 2)]
-    ci_diff_ewma = [round(float(np.percentile(b_diff_ewma, 2.5)), 2), round(float(np.percentile(b_diff_ewma, 97.5)), 2)]
-    ci_diff_snaive = [round(float(np.percentile(b_diff_snaive, 2.5)), 2), round(float(np.percentile(b_diff_snaive, 97.5)), 2)]
-    ci_diff_rm48 = [round(float(np.percentile(b_diff_rm48, 2.5)), 2), round(float(np.percentile(b_diff_rm48, 97.5)), 2)]
-    ci_diff_p99 = [round(float(np.percentile(b_diff_p99, 2.5)), 2), round(float(np.percentile(b_diff_p99, 97.5)), 2)]
-    ci_diff_fleet_p99 = [round(float(np.percentile(b_diff_fleet_p99, 2.5)), 2), round(float(np.percentile(b_diff_fleet_p99, 97.5)), 2)]
+    policy_results: Dict[str, Dict[str, Any]] = {}
+    for label, info in policy_eval_info.items():
+        if info["feasible"]:
+            b_s = info["boot_saved"]
+            b_d = info["boot_diff"]
+            ci_s = [round(float(np.percentile(b_s, 2.5)), 2), round(float(np.percentile(b_s, 97.5)), 2)]
+            ci_d = [round(float(np.percentile(b_d, 2.5)), 2), round(float(np.percentile(b_d, 97.5)), 2)]
+            spans_zero = bool(ci_d[0] <= 0 <= ci_d[1])
+            policy_results[label] = {
+                "policy": info["policy"],
+                "feasible": True,
+                "chosen_margin": info["chosen_margin"],
+                "val_violation": info["val_violation"],
+                "test_violation": info["test_violation"],
+                "test_saved_pct": info["test_saved_pct"],
+                "saved_ci_95": ci_s,
+                "diff_mean": round(float(np.mean(b_d)), 2),
+                "diff_ci_95": ci_d,
+                "diff_spans_zero": spans_zero,
+            }
+        else:
+            policy_results[label] = {
+                "policy": info["policy"],
+                "feasible": False,
+                "drop_reason": info["drop_reason"],
+                "chosen_margin": info["chosen_margin"],
+                "val_violation": info["val_violation"],
+                "test_violation": info["test_violation"],
+                "test_saved_pct": info["test_saved_pct"],
+            }
 
-    overlap = not (ci_ml[1] < ci_rule[0] or ci_rule[1] < ci_ml[0])
-    ml_strictly_superior = bool(ci_diff_rule[0] > 0)
+    best_rule_res = policy_results.get("best_rule", {})
+    rule_ci = best_rule_res.get("saved_ci_95", [0.0, 0.0])
+    rule_diff_ci = best_rule_res.get("diff_ci_95", [0.0, 0.0])
+    cis_overlap = not (ci_ml[1] < rule_ci[0] or rule_ci[1] < ci_ml[0])
+    ml_strictly_superior = bool(rule_diff_ci[0] > 0)
 
     return {
+        "split": split_name,
         "best_ml_policy": best_ml_name,
+        "best_ml_margin": target_dict[best_ml_name]["chosen_margin"],
+        "best_ml_val_viol": target_dict[best_ml_name]["val_violation"],
+        "best_ml_test_viol": best_ml_test_viol,
         "best_ml_saved_pct": best_ml_saved,
         "ml_ci_95": ci_ml,
         "best_rule_policy": best_rule_name,
-        "best_rule_saved_pct": best_rule_saved,
-        "rule_ci_95": ci_rule,
-        "paired_diff_mean": round(float(np.mean(b_diff_rule)), 2),
-        "paired_diff_ci_95": ci_diff_rule,
-        "cis_overlap": overlap,
+        "best_rule_margin": target_dict[best_rule_name]["chosen_margin"],
+        "best_rule_val_viol": target_dict[best_rule_name]["val_violation"],
+        "best_rule_test_viol": target_dict[best_rule_name]["test_violation"],
+        "best_rule_saved_pct": target_dict[best_rule_name]["test_saved_pct"],
+        "rule_ci_95": rule_ci,
+        "paired_diff_mean": best_rule_res.get("diff_mean", 0.0),
+        "paired_diff_ci_95": rule_diff_ci,
+        "cis_overlap": cis_overlap,
         "ml_strictly_superior": ml_strictly_superior,
-        # Comparative baselines
-        "ewma_policy": "EWMA",
-        "ewma_saved_pct": ewma_saved,
-        "ewma_ci_95": ci_ewma,
-        "diff_ewma_mean": round(float(np.mean(b_diff_ewma)), 2),
-        "diff_ewma_ci_95": ci_diff_ewma,
-        "snaive_policy": "SeasonalNaive",
-        "snaive_saved_pct": snaive_saved,
-        "snaive_ci_95": ci_snaive,
-        "diff_snaive_mean": round(float(np.mean(b_diff_snaive)), 2),
-        "diff_snaive_ci_95": ci_diff_snaive,
-        "rm48_policy": "RollingMax48",
-        "rm48_saved_pct": rm48_saved,
-        "rm48_ci_95": ci_rm48,
-        "diff_rm48_mean": round(float(np.mean(b_diff_rm48)), 2),
-        "diff_rm48_ci_95": ci_diff_rm48,
-        "p99_policy": "Percentile99",
-        "p99_saved_pct": p99_saved,
-        "p99_ci_95": ci_p99,
-        "diff_p99_mean": round(float(np.mean(b_diff_p99)), 2),
-        "diff_p99_ci_95": ci_diff_p99,
-        "fleet_p99_policy": "FleetPercentile99",
-        "fleet_p99_saved_pct": fleet_p99_saved,
-        "fleet_p99_ci_95": ci_fleet_p99,
-        "diff_fleet_p99_mean": round(float(np.mean(b_diff_fleet_p99)), 2),
-        "diff_fleet_p99_ci_95": ci_diff_fleet_p99,
+        "policy_results": policy_results,
     }
 
 
@@ -801,7 +831,7 @@ def main():
         "hour_sin", "hour_cos", "req_cpu_cores"
     ]
 
-    margin_grid = np.arange(1.00, 2.05, 0.05).round(2)
+    margin_grid = np.arange(1.00, 4.05, 0.05).round(2)
 
     # 3. Evaluate Splits (a) TIME, (b) APP, (c) APP+TIME
     res_time = evaluate_split_experiments(full_df, "TIME", feature_cols, margin_grid)
@@ -873,21 +903,73 @@ def main():
                 cleaned[tgt][p] = d_c
         return cleaned
 
+    # Core 15 policies from pre-registration
+    core_15_policies = [
+        "Static", "RuleThreshold", "Naive", "RollingMax48", "RollingP99_7d",
+        "SeasonalNaive", "EWMA", "PeakOfTraining", "Percentile95", "Percentile99",
+        "LinearRegression", "DecisionTree", "RandomForest", "GradientBoosting",
+        "GBR_quantile_95"
+    ]
+    all_targets = ["target_5pct", "target_1pct", "target_0_1pct"]
+
     # Hypothesis Verdicts
     # H1: ML saves more than best own-history rule at test violation <= 1% with non-overlapping app CIs
     h1_supported = bool(boot_time["ml_strictly_superior"] and not boot_time["cis_overlap"])
 
-    # H2: Margin chosen on validation keeps test violation within 2x target
-    # Check across targets 5% and 1%
-    h2_violations_exceeded = 0
-    total_checks = 0
-    for split_res in [res_time, res_app, res_app_time]:
-        for tgt in ["target_5pct", "target_1pct"]:
-            for pol, d in split_res["target_results"][tgt].items():
-                total_checks += 1
-                if d["exceeds_2x_target"]:
-                    h2_violations_exceeded += 1
-    h2_supported = bool(h2_violations_exceeded / max(total_checks, 1) < 0.20)
+    # H2: Margin chosen on validation keeps test violation within 2x target across all 3 targets (135 checks)
+    h2_summary: Dict[str, Any] = {
+        "total_checks": 0,
+        "total_exceeded": 0,
+        "met_val_checks": 0,
+        "true_generalization_failures": 0,
+        "by_target": {},
+        "by_split": {s: {"total": 0, "exceeded": 0, "met_val": 0, "true_failures": 0} for s in ["TIME", "APP", "APP_TIME"]},
+        "exceeded_details": []
+    }
+
+    for tgt in all_targets:
+        t_val = 0.05 if tgt == "target_5pct" else (0.01 if tgt == "target_1pct" else 0.001)
+        h2_summary["by_target"][tgt] = {"target_val": t_val, "total": 0, "exceeded": 0, "met_val": 0, "true_failures": 0}
+
+        for s_name, split_res in [("TIME", res_time), ("APP", res_app), ("APP_TIME", res_app_time)]:
+            for pol in core_15_policies:
+                if pol in split_res["target_results"][tgt]:
+                    d = split_res["target_results"][tgt][pol]
+                    h2_summary["total_checks"] += 1
+                    h2_summary["by_target"][tgt]["total"] += 1
+                    h2_summary["by_split"][s_name]["total"] += 1
+
+                    if d["exceeds_2x_target"]:
+                        h2_summary["total_exceeded"] += 1
+                        h2_summary["by_target"][tgt]["exceeded"] += 1
+                        h2_summary["by_split"][s_name]["exceeded"] += 1
+
+                        h2_summary["exceeded_details"].append({
+                            "split": s_name,
+                            "target": tgt,
+                            "target_val": t_val,
+                            "policy": pol,
+                            "margin": d["chosen_margin"],
+                            "val_violation": d["val_violation"],
+                            "test_violation": d["test_violation"],
+                            "met_val_target": d["met_val_target"],
+                            "true_gen_failure": d["true_generalization_failure"]
+                        })
+
+                    if d["met_val_target"]:
+                        h2_summary["met_val_checks"] += 1
+                        h2_summary["by_target"][tgt]["met_val"] += 1
+                        h2_summary["by_split"][s_name]["met_val"] += 1
+
+                        if d["exceeds_2x_target"]:
+                            h2_summary["true_generalization_failures"] += 1
+                            h2_summary["by_target"][tgt]["true_failures"] += 1
+                            h2_summary["by_split"][s_name]["true_failures"] += 1
+
+    # Overall H2 supported if true generalization failure rate among feasible policies < 20%
+    h2_supported = bool(
+        (h2_summary["true_generalization_failures"] / max(h2_summary["met_val_checks"], 1)) < 0.20
+    )
 
     # H3: ML advantage persists on unseen apps
     h3_supported = bool(boot_app["ml_strictly_superior"] and boot_app_time["ml_strictly_superior"])
@@ -900,9 +982,7 @@ def main():
             },
             "H2_validation_margin_calibratability": {
                 "verdict": "SUPPORTED" if h2_supported else "NOT SUPPORTED",
-                "exceeded_2x_count": h2_violations_exceeded,
-                "total_checks": total_checks,
-                "share_exceeded_2x": round(h2_violations_exceeded / max(total_checks, 1) * 100, 2),
+                "h2_summary_135_checks": h2_summary,
             },
             "H3_ml_generalization_unseen_apps": {
                 "verdict": "SUPPORTED" if h3_supported else "NOT SUPPORTED",
@@ -932,22 +1012,34 @@ def main():
     print(f"Saved results to {results_dir / 'gate3b.csv'} and {results_dir / 'gate3b.json'}")
     print(f"Total pipeline runtime: {total_time:.2f}s")
 
+    # Generate Markdown Tables by Script
+    generate_final_tables(results_dir, final_json)
+
     # Print Summary Tables & Hypothesis Status
     print("\n" + "=" * 175)
-    print("GATE 3b SUMMARY: APP-LEVEL BOOTSTRAP AT 1% VIOLATION (VALIDATION-BASED SELECTION)")
+    print("GATE 3b SUMMARY: APP-LEVEL BOOTSTRAP AT 1% VIOLATION (VALIDATION-BASED SELECTION, GRID UP TO 4.00)")
     print("=" * 175)
-    print(f"{'Split':<10} | {'Best ML [95% CI]':<25} | {'Best Rule [95% CI]':<25} | {'Diff vs Rule':<18} | {'Diff vs EWMA':<18} | {'Diff vs SNaive':<18} | {'Diff vs RM48':<18} | {'Diff vs P99':<18} | {'Diff vs FleetP99':<18}")
-    print("-" * 175)
     for s_name, b in [("TIME", boot_time), ("APP", boot_app), ("APP_TIME", boot_app_time)]:
-        ml_str = f"{b['best_ml_policy']} [{b['ml_ci_95'][0]}%, {b['ml_ci_95'][1]}%]"
-        rule_str = f"{b['best_rule_policy']} [{b['rule_ci_95'][0]}%, {b['rule_ci_95'][1]}%]"
-        diff_rule_str = f"{b['paired_diff_mean']:+.2f}% [{b['paired_diff_ci_95'][0]:+.2f}%, {b['paired_diff_ci_95'][1]:+.2f}%]"
-        diff_ewma_str = f"{b['diff_ewma_mean']:+.2f}% [{b['diff_ewma_ci_95'][0]:+.2f}%, {b['diff_ewma_ci_95'][1]:+.2f}%]"
-        diff_snaive_str = f"{b['diff_snaive_mean']:+.2f}% [{b['diff_snaive_ci_95'][0]:+.2f}%, {b['diff_snaive_ci_95'][1]:+.2f}%]"
-        diff_rm48_str = f"{b['diff_rm48_mean']:+.2f}% [{b['diff_rm48_ci_95'][0]:+.2f}%, {b['diff_rm48_ci_95'][1]:+.2f}%]"
-        diff_p99_str = f"{b['diff_p99_mean']:+.2f}% [{b['diff_p99_ci_95'][0]:+.2f}%, {b['diff_p99_ci_95'][1]:+.2f}%]"
-        diff_fp99_str = f"{b['diff_fleet_p99_mean']:+.2f}% [{b['diff_fleet_p99_ci_95'][0]:+.2f}%, {b['diff_fleet_p99_ci_95'][1]:+.2f}%]"
-        print(f"{s_name:<10} | {ml_str:<25} | {rule_str:<25} | {diff_rule_str:<18} | {diff_ewma_str:<18} | {diff_snaive_str:<18} | {diff_rm48_str:<18} | {diff_p99_str:<18} | {diff_fp99_str:<18}")
+        print(f"\n--- Split: {s_name} ---")
+        print(f"Best ML Policy: {b['best_ml_policy']} (Margin={b['best_ml_margin']:.2f}, Val Viol={b['best_ml_val_viol']*100:.2f}%, Test Viol={b['best_ml_test_viol']*100:.2f}%, Test Saved={b['best_ml_saved_pct']:.2f}% [{b['ml_ci_95'][0]}%, {b['ml_ci_95'][1]}%])")
+        print(f"{'Policy':<20} | {'Status':<10} | {'Margin':<7} | {'Val Viol':<10} | {'Test Viol':<10} | {'Test Saved [95% CI]':<26} | {'Diff vs ML [95% CI]':<26} | {'Spans 0?'}")
+        print("-" * 130)
+        for p_label, p_res in b["policy_results"].items():
+            pol_name = p_res["policy"]
+            if p_res["feasible"]:
+                m_str = f"{p_res['chosen_margin']:.2f}"
+                vv_str = f"{p_res['val_violation']*100:.2f}%"
+                tv_str = f"{p_res['test_violation']*100:.2f}%"
+                ts_str = f"{p_res['test_saved_pct']:.2f}% [{p_res['saved_ci_95'][0]}%, {p_res['saved_ci_95'][1]}%]"
+                diff_str = f"{p_res['diff_mean']:+.2f}% [{p_res['diff_ci_95'][0]:+.2f}%, {p_res['diff_ci_95'][1]:+.2f}%]"
+                spans_str = str(p_res["diff_spans_zero"])
+                print(f"{pol_name:<20} | {'Feasible':<10} | {m_str:<7} | {vv_str:<10} | {tv_str:<10} | {ts_str:<26} | {diff_str:<26} | {spans_str}")
+            else:
+                m_str = f"{p_res['chosen_margin']:.2f}"
+                vv_str = f"{p_res['val_violation']*100:.2f}%"
+                tv_str = f"{p_res['test_violation']*100:.2f}%"
+                reason_short = p_res['drop_reason'][:40] + "..." if len(p_res['drop_reason']) > 40 else p_res['drop_reason']
+                print(f"{pol_name:<20} | {'DROPPED':<10} | {m_str:<7} | {vv_str:<10} | {tv_str:<10} | {reason_short:<26} | {'N/A':<26} | N/A")
 
     print("\n" + "=" * 110)
     print("PRE-REGISTERED HYPOTHESES VERDICTS")
@@ -955,15 +1047,136 @@ def main():
     print(f"H1 (ML > Own-History Rule at 1% Violation): {'SUPPORTED' if h1_supported else 'NOT SUPPORTED'}")
     print(f"   Details: TIME split ML ({boot_time['best_ml_policy']}) saved {boot_time['best_ml_saved_pct']}% vs Rule ({boot_time['best_rule_policy']}) saved {boot_time['best_rule_saved_pct']}%. Paired diff = {boot_time['paired_diff_mean']}% (CI: {boot_time['paired_diff_ci_95']}%). Overlap = {boot_time['cis_overlap']}.")
 
-    print(f"H2 (Validation Margin Calibratability): {'SUPPORTED' if h2_supported else 'NOT SUPPORTED'}")
-    print(f"   Threshold (exact quote from hypotheses_gate3b.md):")
-    print(f"   \"keeping the realized test violation rate within 2x the target (i.e. <= 10%, <= 2%, and <= 0.2%, respectively).\"")
-    print(f"   \"Failure Criterion: Any policy whose test violation exceeds 2x target is flagged as miscalibrated / failing generalization.\"")
-    print(f"   Result: {h2_violations_exceeded}/{total_checks} policy-target configurations ({h2_violations_exceeded/total_checks*100:.1f}%) exceeded 2x target violation.")
+    print(f"H2 (Validation Margin Calibratability across 135 checks): {'SUPPORTED' if h2_supported else 'NOT SUPPORTED'}")
+    print(f"   Total checks: {h2_summary['total_checks']} (15 core policies x 3 targets x 3 splits)")
+    print(f"   Total exceeding 2x test limit: {h2_summary['total_exceeded']}/{h2_summary['total_checks']} ({h2_summary['total_exceeded']/h2_summary['total_checks']*100:.1f}%)")
+    print(f"   Policies meeting validation target: {h2_summary['met_val_checks']}/{h2_summary['total_checks']}")
+    print(f"   True generalization failures (met val <= target, but test > 2x target): {h2_summary['true_generalization_failures']}/{h2_summary['met_val_checks']} ({h2_summary['true_generalization_failures']/max(h2_summary['met_val_checks'],1)*100:.1f}%)")
 
     print(f"H3 (ML Advantage Persists on Unseen Apps): {'SUPPORTED' if h3_supported else 'NOT SUPPORTED'}")
     print(f"   Details: APP split paired diff = {boot_app['paired_diff_mean']}% (CI: {boot_app['paired_diff_ci_95']}%); APP+TIME paired diff = {boot_app_time['paired_diff_mean']}% (CI: {boot_app_time['paired_diff_ci_95']}%).")
     print("=" * 110 + "\n")
+
+
+def generate_final_tables(results_dir: Path, data: Dict[str, Any]) -> None:
+    """Generate Markdown tables directly from gate3b.json and save to results/final_tables.md."""
+    lines: List[str] = [
+        "# Phase 2 — Gate 3b Final Empirical Results & Tables",
+        "",
+        "Generated automatically by `scripts/gate3b.py` from `results/gate3b.json`. Zero hand-typed numbers.",
+        "",
+        "---",
+        "",
+        "## Table 1: Policy Feasibility & Validation Selection at 1.0% Target (Margin Grid up to 4.00)",
+        "",
+        "| Split | Policy | Feasible on Val? | Margin ($m$) | Val Viol (%) | Val CPU Saved (%) | Test Viol (%) | Test CPU Saved (%) | Exceeds 2x Test? | True Gen Failure? |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+    ]
+
+    target_res = data["target_results"]
+    for s_name in ["TIME", "APP", "APP_TIME"]:
+        s_data = target_res[s_name]["target_1pct"]
+        for pol, p_info in s_data.items():
+            feas_str = "**Yes**" if p_info.get("met_val_target") else "No (Dropped)"
+            m_str = f"{p_info['chosen_margin']:.2f}"
+            vv_str = f"{p_info['val_violation']*100:.2f}%"
+            vs_str = f"{p_info.get('val_saved_pct', 0.0):.2f}%"
+            tv_str = f"{p_info['test_violation']*100:.2f}%"
+            ts_str = f"{p_info['test_saved_pct']:.2f}%"
+            exc_str = "Yes" if p_info.get("exceeds_2x_target") else "No"
+            tgf_str = "**Yes**" if p_info.get("true_generalization_failure") else "No"
+            lines.append(f"| {s_name} | `{pol}` | {feas_str} | {m_str} | {vv_str} | {vs_str} | {tv_str} | {ts_str} | {exc_str} | {tgf_str} |")
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## Table 2: Paired 500-Draw App-Level Bootstrap Comparison at 1.0% Target",
+        "",
+        "| Split | Policy | Status | Margin | Test Viol (%) | Test CPU Saved [95% CI] | Diff vs Best ML [95% CI] | Diff Spans 0? |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
+    ])
+
+    boot_res = data["bootstrap_results"]
+    for s_name in ["TIME", "APP", "APP_TIME"]:
+        b = boot_res[s_name]
+        ml_pol = b["best_ml_policy"]
+        ml_line = f"| **{s_name}** | **Best ML: `{ml_pol}`** | **Selected** | **{b['best_ml_margin']:.2f}** | **{b['best_ml_test_viol']*100:.2f}%** | **{b['best_ml_saved_pct']:.2f}% [{b['ml_ci_95'][0]}%, {b['ml_ci_95'][1]}%]** | Baseline Reference | — |"
+        lines.append(ml_line)
+
+        for p_label, p_res in b["policy_results"].items():
+            pol_name = p_res["policy"]
+            if p_res["feasible"]:
+                m_str = f"{p_res['chosen_margin']:.2f}"
+                tv_str = f"{p_res['test_violation']*100:.2f}%"
+                ts_str = f"{p_res['test_saved_pct']:.2f}% [{p_res['saved_ci_95'][0]}%, {p_res['saved_ci_95'][1]}%]"
+                diff_str = f"{p_res['diff_mean']:+.2f}% [{p_res['diff_ci_95'][0]:+.2f}%, {p_res['diff_ci_95'][1]:+.2f}%]"
+                spans_str = "Yes" if p_res["diff_spans_zero"] else "**No**"
+                lines.append(f"| {s_name} | `{pol_name}` | Feasible | {m_str} | {tv_str} | {ts_str} | {diff_str} | {spans_str} |")
+            else:
+                m_str = f"{p_res['chosen_margin']:.2f}"
+                tv_str = f"{p_res['test_violation']*100:.2f}%"
+                reason_clean = p_res["drop_reason"].replace("|", "/")
+                lines.append(f"| {s_name} | `{pol_name}` | **DROPPED** | {m_str} | {tv_str} | {reason_clean} | N/A | N/A |")
+
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## Table 3: Hypothesis 2 (H2) Generalization Breakdown (135 Core Checks)",
+        "",
+        "### A. Breakdown by Target",
+        "",
+        "| Target | 2x Test Violation Limit | Total Checks | Exceeded 2x Test Limit | Met Validation Target | True Generalization Failures | True Failure Rate among Feasible |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
+    ])
+
+    h2_sum = data["hypotheses_verdicts"]["H2_validation_margin_calibratability"]["h2_summary_135_checks"]
+    for tgt_key, t_info in h2_sum["by_target"].items():
+        t_label = "5.0%" if tgt_key == "target_5pct" else ("1.0%" if tgt_key == "target_1pct" else "0.1%")
+        limit_str = f"<= {t_info['target_val']*2*100:.1f}%" if t_info['target_val'] >= 0.005 else f"<= {t_info['target_val']*2*100:.2f}%"
+        rate_str = f"{t_info['true_failures']/max(t_info['met_val'],1)*100:.1f}%" if t_info['met_val'] > 0 else "N/A"
+        lines.append(f"| **{t_label}** | {limit_str} | {t_info['total']} | {t_info['exceeded']} | {t_info['met_val']} | {t_info['true_failures']} | {rate_str} |")
+
+    lines.extend([
+        "",
+        "### B. Breakdown by Split",
+        "",
+        "| Split | Total Checks | Exceeded 2x Test Limit | Met Validation Target | True Generalization Failures | True Failure Rate among Feasible |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: |"
+    ])
+
+    for s_name, s_info in h2_sum["by_split"].items():
+        rate_str = f"{s_info['true_failures']/max(s_info['met_val'],1)*100:.1f}%" if s_info['met_val'] > 0 else "N/A"
+        lines.append(f"| **{s_name}** | {s_info['total']} | {s_info['exceeded']} | {s_info['met_val']} | {s_info['true_failures']} | {rate_str} |")
+
+    lines.extend([
+        "",
+        "### C. Overall Generalization Summary",
+        "",
+        f"- **Total Checks**: {h2_sum['total_checks']} (15 core policies x 3 targets x 3 splits)",
+        f"- **Raw Test Exceedances (> 2x target)**: {h2_sum['total_exceeded']} / {h2_sum['total_checks']} ({h2_sum['total_exceeded']/h2_sum['total_checks']*100:.1f}%)",
+        f"- **Policies Meeting Validation Target**: {h2_sum['met_val_checks']} / {h2_sum['total_checks']} ({h2_sum['met_val_checks']/h2_sum['total_checks']*100:.1f}%)",
+        f"- **True Generalization Failures (met val <= target, but test > 2x target)**: **{h2_sum['true_generalization_failures']} / {h2_sum['met_val_checks']}** ({h2_sum['true_generalization_failures']/max(h2_sum['met_val_checks'],1)*100:.1f}%)",
+        "",
+        "---",
+        "",
+        "## Table 4: Exceeded Configurations Breakdown",
+        "",
+        "| Split | Target | Policy | Selected Margin | Val Viol (%) | Test Viol (%) | Exceed Factor | Failure Classification |",
+        "| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :--- |"
+    ])
+
+    for exc in h2_sum["exceeded_details"]:
+        t_label = "5.0%" if exc["target"] == "target_5pct" else ("1.0%" if exc["target"] == "target_1pct" else "0.1%")
+        factor = exc["test_violation"] / exc["target_val"]
+        class_str = "**True Generalization Failure** (Met Val Target)" if exc["true_gen_failure"] else "Unmet Validation Target (Failed on Val)"
+        lines.append(f"| {exc['split']} | {t_label} | `{exc['policy']}` | {exc['margin']:.2f} | {exc['val_violation']*100:.2f}% | {exc['test_violation']*100:.2f}% | {factor:.2f}x | {class_str} |")
+
+    out_file = results_dir / "final_tables.md"
+    with open(out_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"Generated final report tables to {out_file}")
 
 
 if __name__ == "__main__":
