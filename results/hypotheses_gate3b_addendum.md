@@ -25,21 +25,21 @@ Git history confirms that commit `62a07bf` is the first commit of `results/hypot
 ---
 
 ### Hypothesis 2 (H2: Validation Margin Calibratability)
-- **Threshold**: Test violation rate within $2\times$ target ($\le 10.0\%$ for $5\%$ target, $\le 2.0\%$ for $1\%$ target, and $\le 0.20\%$ for $0.1\%$ target).
-- **Verdict**: **SUPPORTED**
-- **Evidence**:
-  - Evaluated across all 135 policy-target-split checks (15 core policies $\times$ 3 targets $\times$ 3 splits; 126 evaluated distinct series):
-    - **Raw Test Exceedances (> 2x limit)**: 27 / 126 (21.4%).
-    - **Policies Meeting Validation Target**: 102 / 126 (81.0%).
-    - **True Generalization Failures** (policies that satisfied the validation target $\le \text{target}$, but failed $2\times$ on test): **7 / 102** (**6.9%**). Over **93.1%** of feasible policies remained strictly within the $2\times$ target envelope.
-  - **By Target**:
-    - **5.0% Target**: 0 / 42 true generalization failures (**0.0%**).
-    - **1.0% Target**: 3 / 40 true generalization failures (**7.5%**), all three occurring in per-container historical percentiles (`PeakOfTraining`, `Percentile95`, `Percentile99`) on TIME.
-    - **0.1% Target**: 4 / 20 true generalization failures (**20.0%**), driven by extreme tail volatility in historical rules. ML policies did not suffer true generalization failures at 0.1% (those exceeding test limits failed validation first).
-  - **By Split**:
-    - **TIME**: 6 / 33 true failures (18.2%).
-    - **APP**: 0 / 35 true failures (**0.0%**).
-    - **APP+TIME**: 1 / 34 true failures (**2.9%**).
+- **Pre-Registered Criterion**: "The margin chosen on validation keeps test violation within 2x target (<=10%, <=2%, and <=0.2%, respectively)."
+- **Verdict (As Written)**: **NOT SUPPORTED**
+  - **Raw Test Exceedances**: Across all active checks (126 evaluated policy-target-split series), **27 configurations (21.4%)** exceeded 2x target violation on test, failing the pre-registered calibratability criterion.
+- **Secondary Finding (Conditional on Validation Feasibility)**:
+  - When restricting analysis conditionally to policies that successfully met the validation target ($\text{val\_violation} \le \text{target}$), only **7 of 102 configurations (6.9%)** exceeded 2x target violation on test.
+  - Over **93.1%** of validation-feasible policies remained strictly within the 2x target envelope.
+  - The raw exceedances are driven by uncalibrated high-variance point models (such as `LinearRegression`, `DecisionTree`, and fixed heuristics at 0.1% target) that had already failed on the validation set, rather than post-selection distribution drift.
+  - **By Target (Conditional True Failures)**:
+    - **5.0% Target**: 0 / 42 (**0.0%**).
+    - **1.0% Target**: 3 / 40 (**7.5%**), all three occurring in per-container historical percentiles (`PeakOfTraining`, `Percentile95`, `Percentile99`) on TIME.
+    - **0.1% Target**: 4 / 20 (**20.0%**), driven by extreme tail volatility in historical rules. ML policies did not suffer true generalization failures at 0.1% (those exceeding test limits failed validation first).
+  - **By Split (Conditional True Failures)**:
+    - **TIME**: 6 / 33 (18.2%).
+    - **APP**: 0 / 35 (**0.0%**).
+    - **APP+TIME**: 1 / 34 (**2.9%**).
 
 ---
 

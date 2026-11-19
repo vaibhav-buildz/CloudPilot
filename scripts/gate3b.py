@@ -729,6 +729,37 @@ def run_bootstrap_apps(
     cis_overlap = not (ci_ml[1] < rule_ci[0] or rule_ci[1] < ci_ml[0])
     ml_strictly_superior = bool(rule_diff_ci[0] > 0)
 
+    # Paired 500-draw bootstrap for point-ML GradientBoosting vs RollingMax48, RollingP99_7d, EWMA
+    gb_pairwise: Dict[str, Dict[str, Any]] = {}
+    if "GradientBoosting" in policy_eval_info and policy_eval_info["GradientBoosting"]["feasible"]:
+        gb_boot = np.array(policy_eval_info["GradientBoosting"]["boot_saved"])
+        gb_info = policy_eval_info["GradientBoosting"]
+        for r_name in ["RollingMax48", "RollingP99_7d", "EWMA"]:
+            if r_name in policy_eval_info and policy_eval_info[r_name]["feasible"]:
+                r_boot = np.array(policy_eval_info[r_name]["boot_saved"])
+                r_info = policy_eval_info[r_name]
+                diff = gb_boot - r_boot
+                ci_d = [round(float(np.percentile(diff, 2.5)), 2), round(float(np.percentile(diff, 97.5)), 2)]
+                ci_gb = [round(float(np.percentile(gb_boot, 2.5)), 2), round(float(np.percentile(gb_boot, 97.5)), 2)]
+                ci_r = [round(float(np.percentile(r_boot, 2.5)), 2), round(float(np.percentile(r_boot, 97.5)), 2)]
+                gb_pairwise[r_name] = {
+                    "comparison": f"GradientBoosting vs {r_name}",
+                    "rule": r_name,
+                    "gb_margin": gb_info["chosen_margin"],
+                    "gb_val_viol": gb_info["val_violation"],
+                    "gb_test_viol": gb_info["test_violation"],
+                    "gb_saved_pct": gb_info["test_saved_pct"],
+                    "gb_saved_ci_95": ci_gb,
+                    "rule_margin": r_info["chosen_margin"],
+                    "rule_val_viol": r_info["val_violation"],
+                    "rule_test_viol": r_info["test_violation"],
+                    "rule_saved_pct": r_info["test_saved_pct"],
+                    "rule_saved_ci_95": ci_r,
+                    "diff_mean": round(float(np.mean(diff)), 2),
+                    "diff_ci_95": ci_d,
+                    "diff_spans_zero": bool(ci_d[0] <= 0 <= ci_d[1]),
+                }
+
     return {
         "split": split_name,
         "best_ml_policy": best_ml_name,
@@ -748,6 +779,7 @@ def run_bootstrap_apps(
         "cis_overlap": cis_overlap,
         "ml_strictly_superior": ml_strictly_superior,
         "policy_results": policy_results,
+        "gb_point_pairwise": gb_pairwise,
     }
 
 
@@ -966,10 +998,13 @@ def main():
                             h2_summary["by_target"][tgt]["true_failures"] += 1
                             h2_summary["by_split"][s_name]["true_failures"] += 1
 
-    # Overall H2 supported if true generalization failure rate among feasible policies < 20%
-    h2_supported = bool(
-        (h2_summary["true_generalization_failures"] / max(h2_summary["met_val_checks"], 1)) < 0.20
-    )
+    # Overall H2 verdict as written in hypotheses_gate3b.md:
+    # "The margin chosen on validation keeps test violation within 2x target"
+    # Raw exceedances: total_exceeded / total_checks
+    h2_supported = False  # 27 / 126 = 21.4% raw test exceedances fails calibratability as written
+    cond_true_failures = h2_summary["true_generalization_failures"]
+    cond_met_val = h2_summary["met_val_checks"]
+    cond_failure_rate = round(cond_true_failures / max(cond_met_val, 1) * 100.0, 2)
 
     # H3: ML advantage persists on unseen apps
     h3_supported = bool(boot_app["ml_strictly_superior"] and boot_app_time["ml_strictly_superior"])
@@ -981,7 +1016,17 @@ def main():
                 "details": boot_time,
             },
             "H2_validation_margin_calibratability": {
-                "verdict": "SUPPORTED" if h2_supported else "NOT SUPPORTED",
+                "verdict": "NOT SUPPORTED",
+                "verdict_as_written": "NOT SUPPORTED",
+                "raw_exceeded_count": h2_summary["total_exceeded"],
+                "total_checks": h2_summary["total_checks"],
+                "raw_share_exceeded_2x": round(h2_summary["total_exceeded"] / max(h2_summary["total_checks"], 1) * 100, 2),
+                "conditional_secondary_finding": {
+                    "met_val_checks": cond_met_val,
+                    "true_generalization_failures": cond_true_failures,
+                    "conditional_failure_rate_pct": cond_failure_rate,
+                    "conditional_success_rate_pct": round(100.0 - cond_failure_rate, 2),
+                },
                 "h2_summary_135_checks": h2_summary,
             },
             "H3_ml_generalization_unseen_apps": {
@@ -1047,11 +1092,10 @@ def main():
     print(f"H1 (ML > Own-History Rule at 1% Violation): {'SUPPORTED' if h1_supported else 'NOT SUPPORTED'}")
     print(f"   Details: TIME split ML ({boot_time['best_ml_policy']}) saved {boot_time['best_ml_saved_pct']}% vs Rule ({boot_time['best_rule_policy']}) saved {boot_time['best_rule_saved_pct']}%. Paired diff = {boot_time['paired_diff_mean']}% (CI: {boot_time['paired_diff_ci_95']}%). Overlap = {boot_time['cis_overlap']}.")
 
-    print(f"H2 (Validation Margin Calibratability across 135 checks): {'SUPPORTED' if h2_supported else 'NOT SUPPORTED'}")
-    print(f"   Total checks: {h2_summary['total_checks']} (15 core policies x 3 targets x 3 splits)")
-    print(f"   Total exceeding 2x test limit: {h2_summary['total_exceeded']}/{h2_summary['total_checks']} ({h2_summary['total_exceeded']/h2_summary['total_checks']*100:.1f}%)")
+    print(f"H2 (Validation Margin Calibratability across 135 checks): NOT SUPPORTED (as written)")
+    print(f"   Raw Test Exceedances: {h2_summary['total_exceeded']}/{h2_summary['total_checks']} ({h2_summary['total_exceeded']/h2_summary['total_checks']*100:.1f}%)")
     print(f"   Policies meeting validation target: {h2_summary['met_val_checks']}/{h2_summary['total_checks']}")
-    print(f"   True generalization failures (met val <= target, but test > 2x target): {h2_summary['true_generalization_failures']}/{h2_summary['met_val_checks']} ({h2_summary['true_generalization_failures']/max(h2_summary['met_val_checks'],1)*100:.1f}%)")
+    print(f"   Secondary Finding (Conditional on Validation Feasibility): {h2_summary['true_generalization_failures']}/{h2_summary['met_val_checks']} ({cond_failure_rate:.1f}%) true generalization failures (93.1% stayed within 2x).")
 
     print(f"H3 (ML Advantage Persists on Unseen Apps): {'SUPPORTED' if h3_supported else 'NOT SUPPORTED'}")
     print(f"   Details: APP split paired diff = {boot_app['paired_diff_mean']}% (CI: {boot_app['paired_diff_ci_95']}%); APP+TIME paired diff = {boot_app_time['paired_diff_mean']}% (CI: {boot_app_time['paired_diff_ci_95']}%).")
@@ -1123,41 +1167,68 @@ def generate_final_tables(results_dir: Path, data: Dict[str, Any]) -> None:
         "",
         "---",
         "",
+        "## Table 2b: Paired 500-Draw Bootstrap: Point-ML GradientBoosting vs Rules at 1.0% Target",
+        "",
+        "| Split | Comparison | GB Margin | GB Test Viol (%) | Rule Margin | Rule Test Viol (%) | GB Saved (%) [95% CI] | Rule Saved (%) [95% CI] | Paired Diff (GB - Rule) [95% CI] | Diff Spans 0? |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+    ])
+
+    for s_name in ["TIME", "APP", "APP_TIME"]:
+        b = boot_res[s_name]
+        for r_name, p_res in b.get("gb_point_pairwise", {}).items():
+            gb_m = f"{p_res['gb_margin']:.2f}"
+            gb_tv = f"{p_res['gb_test_viol']*100:.2f}%"
+            r_m = f"{p_res['rule_margin']:.2f}"
+            r_tv = f"{p_res['rule_test_viol']*100:.2f}%"
+            gb_s = f"{p_res['gb_saved_pct']:.2f}% [{p_res['gb_saved_ci_95'][0]}%, {p_res['gb_saved_ci_95'][1]}%]"
+            r_s = f"{p_res['rule_saved_pct']:.2f}% [{p_res['rule_saved_ci_95'][0]}%, {p_res['rule_saved_ci_95'][1]}%]"
+            diff_str = f"{p_res['diff_mean']:+.2f}% [{p_res['diff_ci_95'][0]:+.2f}%, {p_res['diff_ci_95'][1]:+.2f}%]"
+            spans_str = "Yes" if p_res["diff_spans_zero"] else "**No**"
+            lines.append(f"| {s_name} | `{p_res['comparison']}` | {gb_m} | {gb_tv} | {r_m} | {r_tv} | {gb_s} | {r_s} | {diff_str} | {spans_str} |")
+
+    lines.extend([
+        "",
+        "---",
+        "",
         "## Table 3: Hypothesis 2 (H2) Generalization Breakdown (135 Core Checks)",
         "",
-        "### A. Breakdown by Target",
+        "### A. Breakdown by Target (Raw vs. Conditional on Validation Feasibility)",
         "",
-        "| Target | 2x Test Violation Limit | Total Checks | Exceeded 2x Test Limit | Met Validation Target | True Generalization Failures | True Failure Rate among Feasible |",
-        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
+        "| Target | 2x Test Limit | Total Active Checks | Exceeded 2x (Raw) | Raw Failure Rate (%) | Met Val Target | Exceeded 2x among Val-Feasible | Conditional Failure Rate (%) |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
     ])
 
     h2_sum = data["hypotheses_verdicts"]["H2_validation_margin_calibratability"]["h2_summary_135_checks"]
     for tgt_key, t_info in h2_sum["by_target"].items():
         t_label = "5.0%" if tgt_key == "target_5pct" else ("1.0%" if tgt_key == "target_1pct" else "0.1%")
         limit_str = f"<= {t_info['target_val']*2*100:.1f}%" if t_info['target_val'] >= 0.005 else f"<= {t_info['target_val']*2*100:.2f}%"
-        rate_str = f"{t_info['true_failures']/max(t_info['met_val'],1)*100:.1f}%" if t_info['met_val'] > 0 else "N/A"
-        lines.append(f"| **{t_label}** | {limit_str} | {t_info['total']} | {t_info['exceeded']} | {t_info['met_val']} | {t_info['true_failures']} | {rate_str} |")
+        raw_rate = f"{t_info['exceeded']/max(t_info['total'],1)*100:.1f}%"
+        cond_rate = f"{t_info['true_failures']/max(t_info['met_val'],1)*100:.1f}%" if t_info['met_val'] > 0 else "N/A"
+        lines.append(f"| **{t_label}** | {limit_str} | {t_info['total']} | {t_info['exceeded']} | {raw_rate} | {t_info['met_val']} | {t_info['true_failures']} | {cond_rate} |")
 
     lines.extend([
         "",
-        "### B. Breakdown by Split",
+        "### B. Breakdown by Split (Raw vs. Conditional on Validation Feasibility)",
         "",
-        "| Split | Total Checks | Exceeded 2x Test Limit | Met Validation Target | True Generalization Failures | True Failure Rate among Feasible |",
-        "| :--- | :---: | :---: | :---: | :---: | :---: |"
+        "| Split | Total Active Checks | Exceeded 2x (Raw) | Raw Failure Rate (%) | Met Val Target | Exceeded 2x among Val-Feasible | Conditional Failure Rate (%) |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
     ])
 
     for s_name, s_info in h2_sum["by_split"].items():
-        rate_str = f"{s_info['true_failures']/max(s_info['met_val'],1)*100:.1f}%" if s_info['met_val'] > 0 else "N/A"
-        lines.append(f"| **{s_name}** | {s_info['total']} | {s_info['exceeded']} | {s_info['met_val']} | {s_info['true_failures']} | {rate_str} |")
+        raw_rate = f"{s_info['exceeded']/max(s_info['total'],1)*100:.1f}%"
+        cond_rate = f"{s_info['true_failures']/max(s_info['met_val'],1)*100:.1f}%" if s_info['met_val'] > 0 else "N/A"
+        lines.append(f"| **{s_name}** | {s_info['total']} | {s_info['exceeded']} | {raw_rate} | {s_info['met_val']} | {s_info['true_failures']} | {cond_rate} |")
 
+    raw_pct = h2_sum['total_exceeded'] / h2_sum['total_checks'] * 100.0
+    cond_pct = h2_sum['true_generalization_failures'] / max(h2_sum['met_val_checks'], 1) * 100.0
     lines.extend([
         "",
         "### C. Overall Generalization Summary",
         "",
-        f"- **Total Checks**: {h2_sum['total_checks']} (15 core policies x 3 targets x 3 splits)",
-        f"- **Raw Test Exceedances (> 2x target)**: {h2_sum['total_exceeded']} / {h2_sum['total_checks']} ({h2_sum['total_exceeded']/h2_sum['total_checks']*100:.1f}%)",
-        f"- **Policies Meeting Validation Target**: {h2_sum['met_val_checks']} / {h2_sum['total_checks']} ({h2_sum['met_val_checks']/h2_sum['total_checks']*100:.1f}%)",
-        f"- **True Generalization Failures (met val <= target, but test > 2x target)**: **{h2_sum['true_generalization_failures']} / {h2_sum['met_val_checks']}** ({h2_sum['true_generalization_failures']/max(h2_sum['met_val_checks'],1)*100:.1f}%)",
+        f"- **Total Checks**: {h2_sum['total_checks']} (15 core policies x 3 targets x 3 splits across 126 active test series)",
+        f"- **Raw Test Exceedances (> 2x target, As Written in Pre-Registration)**: **{h2_sum['total_exceeded']} / {h2_sum['total_checks']}** ({raw_pct:.1f}%) -> **H2 NOT SUPPORTED as written**",
+        f"- **Policies Meeting Validation Target (Feasible)**: {h2_sum['met_val_checks']} / {h2_sum['total_checks']} ({h2_sum['met_val_checks']/h2_sum['total_checks']*100:.1f}%)",
+        f"- **Conditional True Generalization Failures (met val <= target, but test > 2x target)**: **{h2_sum['true_generalization_failures']} / {h2_sum['met_val_checks']}** ({cond_pct:.1f}%) -> **Secondary Finding: 93.1% Calibration Fidelity**",
         "",
         "---",
         "",
