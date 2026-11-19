@@ -61,7 +61,7 @@ export default function App() {
   const [adminLoading, setAdminLoading] = useState(false);
 
   // Fetch Health (cold-start resilience)
-  const checkHealth = useCallback(async (isManualRetry = false) => {
+  const checkHealth = useCallback(async () => {
     let timer;
     try {
       timer = setTimeout(() => {
@@ -964,7 +964,9 @@ export default function App() {
                   ))}
                 </select>
               </div>
-              <button onClick={handleAdminPolicySwitch}>Apply Policy</button>
+              <button onClick={handleAdminPolicySwitch} disabled={adminLoading}>
+                {adminLoading ? 'Applying...' : 'Apply Policy'}
+              </button>
             </div>
 
             {/* Allocate Workload */}
@@ -1003,7 +1005,9 @@ export default function App() {
                     />
                   </div>
                 </div>
-                <button type="submit">Allocate Workload</button>
+                <button type="submit" disabled={adminLoading}>
+                  {adminLoading ? 'Allocating...' : 'Allocate Workload'}
+                </button>
               </form>
             </div>
 
@@ -1021,7 +1025,9 @@ export default function App() {
                     onChange={(e) => setReleaseId(e.target.value)}
                   />
                 </div>
-                <button type="submit" className="secondary">Release Workload</button>
+                <button type="submit" className="secondary" disabled={adminLoading}>
+                  {adminLoading ? 'Releasing...' : 'Release Workload'}
+                </button>
               </form>
             </div>
 
@@ -1031,8 +1037,8 @@ export default function App() {
               <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                 Evict all resident workloads and reset server utilization counters to zero.
               </p>
-              <button className="danger" onClick={handleAdminReset} style={{ marginTop: 'auto' }}>
-                ⚠️ Reset Entire Cluster
+              <button className="danger" onClick={handleAdminReset} disabled={adminLoading} style={{ marginTop: 'auto' }}>
+                {adminLoading ? 'Resetting...' : '⚠️ Reset Entire Cluster'}
               </button>
             </div>
           </div>
