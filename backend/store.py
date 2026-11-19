@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -69,36 +70,69 @@ def _record_save_error(table: str, status: Optional[int], raw_body: str, key: Op
         }
 
 
-def _post(table: str, row: Dict[str, Any]) -> None:
-    """Internal synchronous POST to Supabase table; fails safely with structured log on error."""
+def _post_with_retry(
+    table: str,
+    row: Dict[str, Any],
+    max_retries: int = 2,
+    base_timeout: float = 2.5,
+) -> bool:
+    """Synchronous POST to Supabase table with exponential backoff and timeout.
+    
+    Returns True if successfully written (2xx), False otherwise.
+    Never exposes API secrets in logs or exceptions.
+    """
     url, key = _cfg()
     if not url or not key:
-        return
+        return False
+
+    endpoint = f"{url.rstrip('/')}/rest/v1/{table}"
+    data = json.dumps(row).encode("utf-8")
     status: Optional[int] = None
     raw_body: str = ""
-    try:
-        endpoint = f"{url.rstrip('/')}/rest/v1/{table}"
-        data = json.dumps(row).encode("utf-8")
-        req = urllib.request.Request(
-            endpoint,
-            data=data,
-            headers=_headers(key),
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            status = getattr(resp, "status", getattr(resp, "code", 200))
-            raw_body = resp.read().decode("utf-8", errors="replace")
-            if status < 200 or status >= 300:
-                _record_save_error(table, status, raw_body, key)
-    except urllib.error.HTTPError as exc:
-        status = exc.code
+
+    for attempt in range(max_retries + 1):
         try:
-            raw_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
+            req = urllib.request.Request(
+                endpoint,
+                data=data,
+                headers=_headers(key),
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=base_timeout) as resp:
+                status = getattr(resp, "status", getattr(resp, "code", 200))
+                raw_body = resp.read().decode("utf-8", errors="replace")
+                if 200 <= status < 300:
+                    return True
+                _record_save_error(table, status, raw_body, key)
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            try:
+                raw_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                raw_body = str(exc)
+            _record_save_error(table, status, raw_body, key)
+            # Do not retry on 4xx client errors (e.g. 400 schema mismatch, 401 unauthorized)
+            if 400 <= status < 500:
+                return False
+        except Exception as exc:
+            status = None
             raw_body = str(exc)
-        _record_save_error(table, status, raw_body, key)
-    except Exception as exc:
-        _record_save_error(table, None, str(exc), key)
+            _record_save_error(table, None, raw_body, key)
+
+        if attempt < max_retries:
+            backoff_delay = 0.2 * (2 ** attempt)
+            time.sleep(backoff_delay)
+
+    return False
+
+
+# Backward compatibility alias for internal post
+_post = _post_with_retry
+
+
+def save_sync(table: str, row: Dict[str, Any], max_retries: int = 2, timeout: float = 2.5) -> bool:
+    """Synchronously persists a row to a Supabase table with retry and timeout."""
+    return _post_with_retry(table, row, max_retries=max_retries, base_timeout=timeout)
 
 
 def save(table: str, row: Dict[str, Any]) -> None:
@@ -106,26 +140,66 @@ def save(table: str, row: Dict[str, Any]) -> None:
     url, key = _cfg()
     if not url or not key:
         return
-    threading.Thread(target=_post, args=(table, row), daemon=True).start()
+    threading.Thread(target=_post_with_retry, args=(table, row), daemon=True).start()
 
 
-def recent(table: str, limit: int = 50) -> List[Dict[str, Any]]:
-    """Synchronously queries recent rows from a Supabase table ordered by created_at desc."""
+def recent(table: str, limit: int = 50, max_retries: int = 2, timeout: float = 3.0) -> List[Dict[str, Any]]:
+    """Synchronously queries recent rows from a Supabase table ordered by created_at desc with retries."""
     url, key = _cfg()
     if not url or not key:
         return []
+
+    endpoint = f"{url.rstrip('/')}/rest/v1/{table}?order=created_at.desc&limit={int(limit)}"
+    headers = _headers(key, extra={"Accept": "application/json"})
+
+    for attempt in range(max_retries + 1):
+        try:
+            req = urllib.request.Request(endpoint, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                content = resp.read().decode("utf-8")
+                data = json.loads(content)
+                if isinstance(data, list):
+                    return data
+                return []
+        except urllib.error.HTTPError as exc:
+            if 400 <= exc.code < 500:
+                return []
+        except Exception:
+            pass
+
+        if attempt < max_retries:
+            time.sleep(0.2 * (2 ** attempt))
+
+    return []
+
+
+def check_ready(timeout: float = 2.5) -> Tuple[bool, str, Optional[int]]:
+    """Checks whether the Supabase database connection is ready and healthy.
+
+    Returns:
+        Tuple of (is_ready: bool, message: str, status_code: Optional[int])
+    """
+    url, key = _cfg()
+    if not url or not key:
+        return True, "standalone", None
+
     try:
-        endpoint = f"{url.rstrip('/')}/rest/v1/{table}?order=created_at.desc&limit={int(limit)}"
-        headers = _headers(key, extra={"Accept": "application/json"})
-        req = urllib.request.Request(endpoint, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            content = resp.read().decode("utf-8")
-            data = json.loads(content)
-            if isinstance(data, list):
-                return data
-            return []
-    except Exception:
-        return []
+        # Lightweight HEAD/GET check on REST root or simulation_runs with limit 1
+        endpoint = f"{url.rstrip('/')}/rest/v1/simulation_runs?limit=1"
+        req = urllib.request.Request(
+            endpoint,
+            headers=_headers(key, extra={"Accept": "application/json"}),
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            code = getattr(resp, "status", getattr(resp, "code", 200))
+            if 200 <= code < 300:
+                return True, "connected", code
+            return False, f"HTTP {code}", code
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}", exc.code
+    except Exception as exc:
+        return False, str(exc), None
 
 
 def diagnose() -> Dict[str, Any]:

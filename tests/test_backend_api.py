@@ -366,7 +366,11 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         self.assertIn("Access-Control-Allow-Origin", resp.headers)
         self.assertIn("Access-Control-Allow-Methods", resp.headers)
         self.assertIn("Access-Control-Allow-Headers", resp.headers)
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+        # Default must be https://cloud-pilot-gamma.vercel.app with NO wildcard
+        self.assertEqual(
+            resp.headers.get("Access-Control-Allow-Origin"),
+            "https://cloud-pilot-gamma.vercel.app",
+        )
         conn.close()
 
     def test_options_204(self) -> None:
@@ -387,6 +391,8 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
             # Public GET endpoints do NOT require key
             st, _ = self._request("GET", "/healthz")
             self.assertEqual(st, 200)
+            st, _ = self._request("GET", "/health")
+            self.assertEqual(st, 200)
             st, _ = self._request("GET", "/api/v1/health")
             self.assertEqual(st, 200)
             st, _ = self._request("GET", "/api/v1/cluster")
@@ -406,14 +412,22 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
             self.assertIn("key_type", diag)
             self.assertIn("url_host", diag)
 
-            # Public POST /simulate does NOT require key
-            st, res = self._request(
+            # All write/simulate endpoints require key when CLOUDPILOT_API_KEY is configured
+            st, _ = self._request(
                 "POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 10}
+            )
+            self.assertEqual(st, 401)
+
+            st, res = self._request(
+                "POST",
+                "/api/v1/simulate",
+                {"policy": "first_fit", "num_workloads": 10},
+                headers={"X-API-Key": "test-secret-key"},
             )
             self.assertEqual(st, 200)
             self.assertIn("placed_count", res)
 
-            # Protected POST endpoints DO require key
+            # Protected POST endpoints require key
             st, _ = self._request("POST", "/api/v1/policy", {"policy": "best_fit"})
             self.assertEqual(st, 401)
             st, _ = self._request(
@@ -751,7 +765,211 @@ class TestSupabaseStore(unittest.TestCase):
             else:
                 os.environ.pop("SUPABASE_SERVICE_KEY", None)
 
+    def test_check_ready_standalone_and_connected(self) -> None:
+        old_url = os.environ.pop("SUPABASE_URL", None)
+        old_key = os.environ.pop("SUPABASE_SERVICE_KEY", None)
+        try:
+            # Standalone mode when env vars absent
+            is_ready, msg, code = store.check_ready()
+            self.assertTrue(is_ready)
+            self.assertEqual(msg, "standalone")
+            self.assertIsNone(code)
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+
+    @patch("urllib.request.urlopen")
+    def test_check_ready_failure_returns_false(self, mock_urlopen: MagicMock) -> None:
+        mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+        old_url = os.environ.get("SUPABASE_URL")
+        old_key = os.environ.get("SUPABASE_SERVICE_KEY")
+        try:
+            os.environ["SUPABASE_URL"] = "https://mock-db.supabase.co"
+            os.environ["SUPABASE_SERVICE_KEY"] = "mock-key"
+            is_ready, msg, code = store.check_ready()
+            self.assertFalse(is_ready)
+            self.assertIn("Connection refused", msg)
+            self.assertIsNone(code)
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            else:
+                os.environ.pop("SUPABASE_URL", None)
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+            else:
+                os.environ.pop("SUPABASE_SERVICE_KEY", None)
+
+
+class TestProductionReliabilityAndSecurity(unittest.TestCase):
+    """Tests for Production-Readiness pass: auth, validation, health/ready, db resilience."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = create_app_server(host="127.0.0.1", port=0)
+        cls.host, cls.port = cls.server.server_address
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Tuple[int, Dict[str, Any]]:
+        conn = http.client.HTTPConnection(self.host, self.port)
+        h = {"Content-Type": "application/json"}
+        if headers:
+            h.update(headers)
+        data = json.dumps(body) if body is not None else None
+        conn.request(method, path, data, h)
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8")
+        conn.close()
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            parsed = {"raw": raw}
+        return resp.status, parsed
+
+    def test_health_endpoint_happy_path(self) -> None:
+        st, data = self._request("GET", "/health")
+        self.assertEqual(st, 200)
+        self.assertEqual(data.get("status"), "ok")
+        self.assertIn("uptime_sec", data)
+
+    def test_ready_endpoint_standalone(self) -> None:
+        old_url = os.environ.pop("SUPABASE_URL", None)
+        old_key = os.environ.pop("SUPABASE_SERVICE_KEY", None)
+        try:
+            st, data = self._request("GET", "/ready")
+            self.assertEqual(st, 200)
+            self.assertEqual(data.get("status"), "ready")
+            self.assertEqual(data.get("database"), "standalone")
+        finally:
+            if old_url is not None:
+                os.environ["SUPABASE_URL"] = old_url
+            if old_key is not None:
+                os.environ["SUPABASE_SERVICE_KEY"] = old_key
+
+    @patch("backend.store.check_ready")
+    def test_ready_endpoint_db_failure_returns_503(self, mock_check_ready: MagicMock) -> None:
+        mock_check_ready.return_value = (False, "HTTP 500", 500)
+        st, data = self._request("GET", "/ready")
+        self.assertEqual(st, 503)
+        self.assertEqual(data.get("code"), "service_unavailable")
+        self.assertEqual(data.get("database"), "disconnected")
+        self.assertIn("Database connection is not ready", data.get("error", ""))
+
+    def test_input_validation_bounds_num_workloads(self) -> None:
+        # Exceeds maximum 1000 workloads cap
+        st, data = self._request("POST", "/api/v1/simulate", {"num_workloads": 1001})
+        self.assertEqual(st, 400)
+        self.assertEqual(data.get("code"), "bad_request")
+        self.assertIn("out of bounds", data.get("error", ""))
+
+        # Zero or negative workloads
+        st, data = self._request("POST", "/api/v1/simulate", {"num_workloads": 0})
+        self.assertEqual(st, 400)
+        self.assertEqual(data.get("code"), "bad_request")
+
+        st, data = self._request("POST", "/api/v1/simulate", {"num_workloads": -10})
+        self.assertEqual(st, 400)
+
+    def test_input_validation_invalid_policy(self) -> None:
+        st, data = self._request("POST", "/api/v1/simulate", {"policy": "magic_ai_unsupported"})
+        self.assertEqual(st, 400)
+        self.assertEqual(data.get("code"), "bad_request")
+        self.assertIn("Invalid policy", data.get("error", ""))
+
+    def test_input_validation_allocate_bounds(self) -> None:
+        # Negative CPU
+        st, data = self._request("POST", "/api/v1/allocate", {"workload_id": "w1", "cpu": -1.0, "ram": 2.0})
+        self.assertEqual(st, 400)
+        self.assertIn("cpu", data.get("error", "").lower())
+
+        # Out-of-bounds RAM
+        st, data = self._request("POST", "/api/v1/allocate", {"workload_id": "w1", "cpu": 1.0, "ram": 5000.0})
+        self.assertEqual(st, 400)
+        self.assertIn("ram", data.get("error", "").lower())
+
+    @patch("backend.store.save_sync")
+    def test_simulate_runs_and_returns_not_saved_when_db_down(self, mock_save_sync: MagicMock) -> None:
+        mock_save_sync.return_value = False
+        st, data = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 10})
+        self.assertEqual(st, 200)
+        self.assertIn("placed_count", data)
+        # Resilience verification: simulation runs successfully even if DB fails
+        self.assertEqual(data.get("store_status"), "not saved")
+        self.assertFalse(data.get("persisted"))
+
+    @patch("backend.store.save_sync")
+    def test_simulate_returns_saved_when_db_succeeds(self, mock_save_sync: MagicMock) -> None:
+        mock_save_sync.return_value = True
+        st, data = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 10})
+        self.assertEqual(st, 200)
+        self.assertEqual(data.get("store_status"), "saved")
+        self.assertTrue(data.get("persisted"))
+
+    def test_structured_error_responses_no_stack_traces(self) -> None:
+        st, data = self._request("GET", "/non_existent_endpoint")
+        self.assertEqual(st, 404)
+        self.assertIn("error", data)
+        self.assertEqual(data.get("status"), 404)
+        self.assertEqual(data.get("code"), "not_found")
+        self.assertNotIn("Traceback", json.dumps(data))
+
+    def test_live_render_end_to_end_simulation_and_history(self) -> None:
+        """Integration test against live Render backend: verifies simulation saves and appears in history."""
+        render_url = "https://cloudpilot-2whk.onrender.com"
+        try:
+            # 1. Health check to ensure remote backend is awake
+            req_h = urllib.request.Request(f"{render_url}/api/v1/health")
+            with urllib.request.urlopen(req_h, timeout=10.0) as resp:
+                if resp.status != 200:
+                    self.skipTest("Live Render backend not returning 200")
+        except Exception as exc:
+            self.skipTest(f"Live Render backend unreachable ({exc}); skipping live integration test.")
+
+        # 2. Trigger on-demand simulation
+        sim_payload = json.dumps({"policy": "round_robin", "num_workloads": 12, "seed": 99}).encode("utf-8")
+        req_sim = urllib.request.Request(
+            f"{render_url}/api/v1/simulate",
+            data=sim_payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_sim, timeout=15.0) as resp:
+            self.assertEqual(resp.status, 200)
+            sim_res = json.loads(resp.read().decode("utf-8"))
+            self.assertEqual(sim_res.get("placed_count"), 12)
+
+        # 3. Allow time for Supabase record propagation
+        time.sleep(2.0)
+
+        # 4. Verify run appears in History
+        req_hist = urllib.request.Request(f"{render_url}/api/v1/history")
+        with urllib.request.urlopen(req_hist, timeout=10.0) as resp:
+            self.assertEqual(resp.status, 200)
+            hist = json.loads(resp.read().decode("utf-8"))
+            self.assertIsInstance(hist, list)
+            self.assertGreater(len(hist), 0)
+            found_run = any(
+                entry.get("policy") == "round_robin" and entry.get("num_workloads") == 12
+                for entry in hist
+            )
+            self.assertTrue(found_run, "Simulation run was not found in Supabase history on live Render backend.")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

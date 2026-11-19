@@ -211,8 +211,8 @@ class CloudPilotService:
                 raise InvalidResourceError(
                     f"Unsupported policy '{chosen_policy}'. Available: {self.available_policies}"
                 )
-            if isinstance(num_workloads, bool) or not isinstance(num_workloads, int) or not (1 <= num_workloads <= 2000):
-                raise InvalidResourceError("num_workloads must be an integer between 1 and 2000.")
+            if isinstance(num_workloads, bool) or not isinstance(num_workloads, int) or not (1 <= num_workloads <= 1000):
+                raise InvalidResourceError("num_workloads must be an integer between 1 and 1000.")
             if isinstance(seed, bool) or not isinstance(seed, (int, float)):
                 raise InvalidResourceError("seed must be an integer.")
 

@@ -18,21 +18,61 @@ from urllib.parse import urlparse
 from allocation.exceptions import AllocationError, InvalidResourceError, ReleaseError
 import backend.store as store
 from backend.service import CloudPilotService
+from backend.validators import (
+    ALLOWED_POLICIES,
+    validate_allocate_payload,
+    validate_policy_payload,
+    validate_release_payload,
+    validate_simulate_payload,
+)
 
 MAX_BODY = 64 * 1024  # 64 KB
 SIM_SLOTS = threading.BoundedSemaphore(2)
 
+DEFAULT_ALLOWED_ORIGIN = "https://cloud-pilot-gamma.vercel.app"
+
+# Rate limits: (max_requests, window_seconds)
 SIM_RATE_LIMIT = 10
-SIM_RATE_WINDOW = 60.0  # seconds
+SIM_RATE_WINDOW = 60.0
 _sim_rate_lock = threading.Lock()
 _sim_rate_history: Dict[str, List[float]] = {}
 
+GENERAL_RATE_LIMIT = 120
+GENERAL_RATE_WINDOW = 60.0
+_general_rate_lock = threading.Lock()
+_general_rate_history: Dict[str, List[float]] = {}
+
+# All state-mutating and simulation endpoints are protected
 PROTECTED_POST_PATHS = {
     "/api/v1/policy",
     "/api/v1/allocate",
     "/api/v1/release",
     "/api/v1/reset",
+    "/api/v1/simulate",
 }
+
+
+def _check_rate_limit(client_ip: str, category: str) -> bool:
+    """Checks per-IP rate limit for a given endpoint category."""
+    now = time.time()
+    if category == "simulate":
+        with _sim_rate_lock:
+            recent = [t for t in _sim_rate_history.get(client_ip, []) if now - t < SIM_RATE_WINDOW]
+            if len(recent) >= SIM_RATE_LIMIT:
+                _sim_rate_history[client_ip] = recent
+                return False
+            recent.append(now)
+            _sim_rate_history[client_ip] = recent
+            return True
+    else:
+        with _general_rate_lock:
+            recent = [t for t in _general_rate_history.get(client_ip, []) if now - t < GENERAL_RATE_WINDOW]
+            if len(recent) >= GENERAL_RATE_LIMIT:
+                _general_rate_history[client_ip] = recent
+                return False
+            recent.append(now)
+            _general_rate_history[client_ip] = recent
+            return True
 
 
 class PayloadTooLargeError(Exception):
@@ -205,12 +245,24 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _get_allowed_origin(self) -> str:
+        """Determines allowed CORS origin from ALLOWED_ORIGIN env var without wildcard default."""
+        configured = os.environ.get("ALLOWED_ORIGIN", "").strip()
+        if not configured:
+            return DEFAULT_ALLOWED_ORIGIN
+        allowed_list = [o.strip() for o in configured.split(",") if o.strip()]
+        client_origin = self.headers.get("Origin", "")
+        if client_origin and client_origin in allowed_list:
+            return client_origin
+        return allowed_list[0] if allowed_list else DEFAULT_ALLOWED_ORIGIN
+
     def _send_cors_headers(self) -> None:
-        """Emits standard CORS headers configurable via ALLOWED_ORIGIN env var."""
-        origin = os.environ.get("ALLOWED_ORIGIN", "*")
+        """Emits standard CORS headers configurable via ALLOWED_ORIGIN env var. No wildcard."""
+        origin = self._get_allowed_origin()
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+        self.send_header("Vary", "Origin")
 
     def _send_json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -221,6 +273,24 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_error(
+        self,
+        status: int,
+        message: str,
+        code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Returns structured JSON error response without leaking stack traces."""
+        error_name = code or HTTPStatus(status).name.lower()
+        payload: Dict[str, Any] = {
+            "error": message,
+            "status": int(status),
+            "code": error_name,
+        }
+        if details:
+            payload.update(details)
+        self._send_json(status, payload)
 
     def _send_html(self, status: int, html: str) -> None:
         body = html.encode("utf-8")
@@ -241,12 +311,18 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _authorized(self) -> bool:
-        """Verifies X-API-Key against CLOUDPILOT_API_KEY environment variable if configured."""
+        """Verifies X-API-Key or Authorization header against CLOUDPILOT_API_KEY if configured."""
         configured_key = os.environ.get("CLOUDPILOT_API_KEY")
         if not configured_key:
             return True
-        header_key = self.headers.get("X-API-Key", "")
-        return hmac.compare_digest(header_key, configured_key)
+        header_key = self.headers.get("X-API-Key")
+        if not header_key:
+            auth_hdr = self.headers.get("Authorization", "")
+            if auth_hdr.startswith("Bearer "):
+                header_key = auth_hdr[7:].strip()
+            else:
+                header_key = auth_hdr.strip()
+        return bool(header_key and hmac.compare_digest(header_key, configured_key))
 
     def _read_json_body(self) -> Dict[str, Any]:
         raw_len = self.headers.get("Content-Length", "0")
@@ -284,12 +360,40 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         t0 = time.perf_counter()
         status = HTTPStatus.OK
+        client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
+
+        if not _check_rate_limit(client_ip, "default"):
+            status = HTTPStatus.TOO_MANY_REQUESTS
+            self._send_error(status, "Rate limit exceeded. Try again shortly.", code="too_many_requests")
+            self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0)
+            return
+
         try:
             path = urlparse(self.path).path
             if path in ("/", "/index.html"):
                 self._send_html(HTTPStatus.OK, DASHBOARD_HTML)
-            elif path == "/healthz":
-                self._send_json(HTTPStatus.OK, {"status": "ok"})
+            elif path in ("/health", "/healthz"):
+                self._send_json(HTTPStatus.OK, {
+                    "status": "ok",
+                    "service": "CloudPilot Control Plane",
+                    "uptime_sec": round(time.time() - self.server.service._started_at, 2),
+                })
+            elif path in ("/ready", "/api/v1/ready"):
+                is_ready, db_status, code = store.check_ready()
+                if is_ready:
+                    self._send_json(HTTPStatus.OK, {
+                        "status": "ready",
+                        "database": db_status,
+                        "service": "CloudPilot Control Plane",
+                    })
+                else:
+                    status = HTTPStatus.SERVICE_UNAVAILABLE
+                    self._send_error(
+                        status,
+                        f"Database connection is not ready ({db_status}).",
+                        code="service_unavailable",
+                        details={"database": "disconnected", "http_status": code},
+                    )
             elif path == "/api/v1/health":
                 self._send_json(HTTPStatus.OK, self.server.service.get_health())
             elif path == "/api/v1/cluster":
@@ -299,16 +403,16 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/v1/store/status":
                 if not self._authorized():
                     status = HTTPStatus.UNAUTHORIZED
-                    self._send_json(status, {"error": "Unauthorized."})
+                    self._send_error(status, "Unauthorized. Valid X-API-Key required.", code="unauthorized")
                     return
                 self._send_json(HTTPStatus.OK, store.diagnose())
             else:
                 status = HTTPStatus.NOT_FOUND
-                self._send_json(status, {"error": f"Endpoint '{path}' not found."})
+                self._send_error(status, f"Endpoint '{path}' not found.", code="not_found")
         except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-            self._send_json(status, {"error": "internal"})
+            self._send_error(status, "Internal server error.", code="internal_error")
         finally:
             self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0)
 
@@ -316,39 +420,46 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         t0 = time.perf_counter()
         status = HTTPStatus.OK
         acquired_sim = False
+        client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
+
         try:
             path = urlparse(self.path).path
 
-            # Only protected state-mutating endpoints require API key auth
+            # Category-based rate limiting
+            category = "simulate" if path == "/api/v1/simulate" else "write"
+            if not _check_rate_limit(client_ip, category):
+                status = HTTPStatus.TOO_MANY_REQUESTS
+                msg = "Rate limit exceeded. Max 10 simulations per minute." if category == "simulate" else "Rate limit exceeded. Try again shortly."
+                self._send_error(status, msg, code="too_many_requests")
+                return
+
+            # API key authentication on all write/simulate endpoints
             if path in PROTECTED_POST_PATHS and not self._authorized():
                 status = HTTPStatus.UNAUTHORIZED
-                self._send_json(status, {"error": "Unauthorized."})
+                self._send_error(status, "Unauthorized. Valid X-API-Key required.", code="unauthorized")
                 return
 
             body = self._read_json_body()
 
             if path == "/api/v1/policy":
-                if "policy" not in body:
-                    raise InvalidResourceError("Missing required field 'policy'.")
-                res = self.server.service.set_policy(body["policy"])
+                clean_policy = validate_policy_payload(body)
+                res = self.server.service.set_policy(clean_policy)
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 
             elif path == "/api/v1/allocate":
-                for req_field in ("workload_id", "cpu", "ram"):
-                    if req_field not in body:
-                        raise InvalidResourceError(f"Missing required field '{req_field}'.")
+                alloc_data = validate_allocate_payload(body)
                 res = self.server.service.allocate_workload(
-                    workload_id=body["workload_id"],
-                    cpu=body["cpu"],
-                    ram=body["ram"],
-                    arrival_time=body.get("arrival_time", 0.0),
-                    duration=body.get("duration"),
+                    workload_id=alloc_data["workload_id"],
+                    cpu=alloc_data["cpu"],
+                    ram=alloc_data["ram"],
+                    arrival_time=alloc_data["arrival_time"],
+                    duration=alloc_data["duration"],
                 )
                 alloc_record = {
-                    "workload_id": body.get("workload_id"),
-                    "cpu": body.get("cpu"),
-                    "ram": body.get("ram"),
+                    "workload_id": alloc_data["workload_id"],
+                    "cpu": alloc_data["cpu"],
+                    "ram": alloc_data["ram"],
                     "placed": bool(res.get("placed")),
                     "server_id": res.get("server_id"),
                     "policy": res.get("active_policy"),
@@ -359,9 +470,8 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(status, res)
 
             elif path == "/api/v1/release":
-                if "workload_id" not in body:
-                    raise InvalidResourceError("Missing required field 'workload_id'.")
-                res = self.server.service.release_workload(body["workload_id"])
+                workload_id = validate_release_payload(body)
+                res = self.server.service.release_workload(workload_id)
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 
@@ -371,42 +481,14 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(status, res)
 
             elif path == "/api/v1/simulate":
-                # Per-client IP rate limiter: max 10 requests / 60 seconds
-                client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
-                now = time.time()
-                with _sim_rate_lock:
-                    recent_calls = [
-                        t for t in _sim_rate_history.get(client_ip, [])
-                        if now - t < SIM_RATE_WINDOW
-                    ]
-                    if len(recent_calls) >= SIM_RATE_LIMIT:
-                        _sim_rate_history[client_ip] = recent_calls
-                        status = HTTPStatus.TOO_MANY_REQUESTS
-                        self._send_json(
-                            status,
-                            {"error": "Rate limit exceeded. Max 10 simulations per minute."},
-                        )
-                        return
-                    recent_calls.append(now)
-                    _sim_rate_history[client_ip] = recent_calls
-
-                # Semaphore concurrency control
+                # Concurrency control via semaphore
                 if not SIM_SLOTS.acquire(blocking=False):
                     status = HTTPStatus.TOO_MANY_REQUESTS
-                    self._send_json(
-                        status, {"error": "Simulation queue full. Try again shortly."}
-                    )
+                    self._send_error(status, "Simulation queue full. Try again shortly.", code="too_many_requests")
                     return
                 acquired_sim = True
-                req_policy = body.get("policy")
-                try:
-                    num_workloads = int(body.get("num_workloads", 200))
-                except (ValueError, TypeError):
-                    num_workloads = 200
-                try:
-                    seed = int(body.get("seed", 42))
-                except (ValueError, TypeError):
-                    seed = 42
+
+                req_policy, num_workloads, seed = validate_simulate_payload(body)
 
                 res = self.server.service.run_simulation(
                     policy=req_policy,
@@ -420,30 +502,39 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     seed=seed,
                     result=res,
                 )
-                store.save("simulation_runs", sim_row)
+
+                # Persist with retry and timeout; if database is down, simulation still succeeds
+                saved = store.save_sync("simulation_runs", sim_row, max_retries=1, timeout=2.0)
+                if saved:
+                    res["store_status"] = "saved"
+                    res["persisted"] = True
+                else:
+                    res["store_status"] = "not saved"
+                    res["persisted"] = False
+
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 
             else:
                 status = HTTPStatus.NOT_FOUND
-                self._send_json(status, {"error": f"Endpoint '{path}' not found."})
+                self._send_error(status, f"Endpoint '{path}' not found.", code="not_found")
 
         except PayloadTooLargeError as exc:
             status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="request_entity_too_large")
         except InvalidResourceError as exc:
             status = HTTPStatus.BAD_REQUEST
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="bad_request")
         except ReleaseError as exc:
             status = HTTPStatus.NOT_FOUND
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="not_found")
         except AllocationError as exc:
             status = HTTPStatus.CONFLICT
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="conflict")
         except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-            self._send_json(status, {"error": "internal"})
+            self._send_error(status, "Internal server error.", code="internal_error")
         finally:
             if acquired_sim:
                 SIM_SLOTS.release()
