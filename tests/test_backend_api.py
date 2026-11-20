@@ -1173,9 +1173,9 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         self.assertEqual(st, 504)
         self.assertEqual(data.get("code"), "simulation_timeout")
 
-        # Verify both semaphore slots are free
-        slot1 = SIM_SLOTS.acquire(blocking=False)
-        slot2 = SIM_SLOTS.acquire(blocking=False)
+        # Allow server thread to finish finally block
+        slot1 = SIM_SLOTS.acquire(blocking=True, timeout=2.0)
+        slot2 = SIM_SLOTS.acquire(blocking=True, timeout=2.0)
         self.assertTrue(slot1)
         self.assertTrue(slot2)
         SIM_SLOTS.release()
@@ -1189,9 +1189,9 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         self.assertEqual(st, 500)
         self.assertEqual(data.get("code"), "internal_error")
 
-        # Verify both semaphore slots are free
-        slot1 = SIM_SLOTS.acquire(blocking=False)
-        slot2 = SIM_SLOTS.acquire(blocking=False)
+        # Allow server thread to finish finally block
+        slot1 = SIM_SLOTS.acquire(blocking=True, timeout=2.0)
+        slot2 = SIM_SLOTS.acquire(blocking=True, timeout=2.0)
         self.assertTrue(slot1)
         self.assertTrue(slot2)
         SIM_SLOTS.release()
