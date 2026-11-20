@@ -272,3 +272,25 @@ def diagnose() -> Dict[str, Any]:
         "response_body": response_body,
         "last_save_error": last_err,
     }
+
+
+def delete_sync(table: str, match_params: Dict[str, Any], timeout: float = 3.0) -> bool:
+    """Deletes rows from Supabase matching query parameters (e.g. {'seed': 'eq.12345'})."""
+    url, key = _cfg()
+    if not url or not key:
+        return False
+    query = "&".join(f"{k}={v}" for k, v in match_params.items())
+    endpoint = f"{url.rstrip('/')}/rest/v1/{table}?{query}"
+    try:
+        req = urllib.request.Request(
+            endpoint,
+            headers=_headers(key),
+            method="DELETE",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", getattr(resp, "code", 200))
+            return 200 <= status < 300
+    except Exception as exc:
+        _record_save_error(table, getattr(exc, "code", None), str(exc), key)
+        return False
+
