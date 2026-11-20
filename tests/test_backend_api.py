@@ -4,6 +4,7 @@ import http.client
 import io
 import json
 import os
+import secrets
 import threading
 import time
 import unittest
@@ -12,7 +13,7 @@ import urllib.request
 from typing import Any, Dict, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
-from allocation.exceptions import InvalidResourceError, ReleaseError
+from allocation.exceptions import InvalidResourceError, ReleaseError, SimulationLimitError, SimulationTimeoutError
 from allocation.workload import Workload
 from backend.server import SIM_SLOTS, _sim_rate_history, _sim_rate_lock, create_app_server
 import backend.store as store
@@ -1041,6 +1042,133 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         self.assertEqual(data.get("code"), "not_found")
         self.assertNotIn("Traceback", json.dumps(data))
 
+    def test_client_ip_spoofed_header_without_key_ignored(self) -> None:
+        """Unauthenticated requests cannot spoof X-CloudPilot-Client-IP; backend falls back to XFF."""
+        # Clean rate history
+        with _sim_rate_lock:
+            _sim_rate_history.clear()
+
+        # Without API key, pass spoofed X-CloudPilot-Client-IP and normal XFF
+        headers = {
+            "X-CloudPilot-Client-IP": "198.51.100.99",
+            "X-Forwarded-For": "203.0.113.5",
+        }
+        st, data = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5}, headers=headers)
+        self.assertEqual(st, 200)
+
+        # Confirm the rate history bucket was created for 203.0.113.5, NOT 198.51.100.99
+        with _sim_rate_lock:
+            self.assertIn("203.0.113.5", _sim_rate_history)
+            self.assertNotIn("198.51.100.99", _sim_rate_history)
+
+    def test_client_ip_trusted_header_with_key_used(self) -> None:
+        """Authenticated requests (from Vercel proxy) use X-CloudPilot-Client-IP."""
+        with _sim_rate_lock:
+            _sim_rate_history.clear()
+
+        old_key = os.environ.get("CLOUDPILOT_API_KEY")
+        os.environ["CLOUDPILOT_API_KEY"] = "secret_test_key"
+        try:
+            headers = {
+                "X-API-Key": "secret_test_key",
+                "X-CloudPilot-Client-IP": "198.51.100.42",
+                "X-Forwarded-For": "203.0.113.5",
+            }
+            st, data = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5}, headers=headers)
+            self.assertEqual(st, 200)
+
+            # Confirm rate history used the proxy-asserted IP
+            with _sim_rate_lock:
+                self.assertIn("198.51.100.42", _sim_rate_history)
+                self.assertNotIn("203.0.113.5", _sim_rate_history)
+        finally:
+            if old_key is not None:
+                os.environ["CLOUDPILOT_API_KEY"] = old_key
+            else:
+                os.environ.pop("CLOUDPILOT_API_KEY", None)
+
+    def test_rate_limiting_independent_buckets_for_distinct_client_ips(self) -> None:
+        """Distinct client IPs forwarded by proxy receive independent rate limit quotas."""
+        with _sim_rate_lock:
+            _sim_rate_history.clear()
+
+        old_key = os.environ.get("CLOUDPILOT_API_KEY")
+        os.environ["CLOUDPILOT_API_KEY"] = "secret_test_key"
+        try:
+            # Saturate IP 10.0.0.1 (10 requests)
+            with _sim_rate_lock:
+                _sim_rate_history["10.0.0.1"] = [time.time()] * 10
+
+            headers_ip1 = {"X-API-Key": "secret_test_key", "X-CloudPilot-Client-IP": "10.0.0.1"}
+            st1, data1 = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5}, headers=headers_ip1)
+            self.assertEqual(st1, 429)
+            self.assertEqual(data1.get("code"), "rate_limit_exceeded")
+
+            # Different client IP 10.0.0.2 should NOT be throttled
+            headers_ip2 = {"X-API-Key": "secret_test_key", "X-CloudPilot-Client-IP": "10.0.0.2"}
+            st2, data2 = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5}, headers=headers_ip2)
+            self.assertEqual(st2, 200)
+            self.assertIn("placed_count", data2)
+        finally:
+            if old_key is not None:
+                os.environ["CLOUDPILOT_API_KEY"] = old_key
+            else:
+                os.environ.pop("CLOUDPILOT_API_KEY", None)
+
+    @patch("backend.store.check_ready")
+    def test_ready_endpoint_cached_for_10s(self, mock_check_ready: MagicMock) -> None:
+        """The /ready endpoint caches Supabase connection checks for 10s."""
+        store.clear_ready_cache()
+        mock_check_ready.return_value = (True, "connected", 200)
+
+        # First request queries check_ready
+        st1, data1 = self._request("GET", "/ready")
+        self.assertEqual(st1, 200)
+        self.assertEqual(data1, {"status": "ok"})
+        self.assertEqual(mock_check_ready.call_count, 1)
+
+        # Subsequent requests within 10s do not query Supabase again
+        with patch.object(store, "_cfg", return_value=("https://mock.supabase.co", "key")):
+            with patch("urllib.request.urlopen") as mock_url:
+                # Direct check_ready with cache
+                res_cached = store.check_ready()
+                self.assertTrue(res_cached[0])
+                mock_url.assert_not_called()
+
+        store.clear_ready_cache()
+
+    @patch("backend.service.CloudPilotService.run_simulation")
+    def test_simulation_semaphore_released_on_timeout(self, mock_run_sim: MagicMock) -> None:
+        """Ensures semaphore slot is released immediately when simulation raises SimulationTimeoutError."""
+        mock_run_sim.side_effect = SimulationTimeoutError("Simulation timed out.")
+        st, data = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5})
+        self.assertEqual(st, 504)
+        self.assertEqual(data.get("code"), "simulation_timeout")
+
+        # Verify both semaphore slots are free
+        slot1 = SIM_SLOTS.acquire(blocking=False)
+        slot2 = SIM_SLOTS.acquire(blocking=False)
+        self.assertTrue(slot1)
+        self.assertTrue(slot2)
+        SIM_SLOTS.release()
+        SIM_SLOTS.release()
+
+    @patch("backend.service.CloudPilotService.run_simulation")
+    def test_simulation_semaphore_released_on_exception(self, mock_run_sim: MagicMock) -> None:
+        """Ensures semaphore slot is released immediately when simulation raises unexpected Exception."""
+        mock_run_sim.side_effect = RuntimeError("Fatal internal compute failure.")
+        st, data = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5})
+        self.assertEqual(st, 500)
+        self.assertEqual(data.get("code"), "internal_error")
+
+        # Verify both semaphore slots are free
+        slot1 = SIM_SLOTS.acquire(blocking=False)
+        slot2 = SIM_SLOTS.acquire(blocking=False)
+        self.assertTrue(slot1)
+        self.assertTrue(slot2)
+        SIM_SLOTS.release()
+        SIM_SLOTS.release()
+
     @unittest.skipUnless(os.environ.get("RUN_LIVE_TESTS") == "1", "Live Render tests gated behind RUN_LIVE_TESTS=1")
     def test_live_render_end_to_end_simulation_and_history(self) -> None:
         """Integration test against live Render backend: verifies simulation saves, appears in history, and cleans up."""
@@ -1060,8 +1188,8 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         except Exception as exc:
             self.skipTest(f"Live Render backend unreachable ({exc}); skipping live integration test.")
 
-        # 2. Trigger on-demand simulation with tagged seed
-        tagged_seed = 999000 + (int(time.time()) % 900)
+        # 2. Trigger on-demand simulation with random 9-digit seed
+        tagged_seed = 100_000_000 + secrets.randbelow(900_000_000)
         sim_payload = json.dumps({
             "policy": "round_robin",
             "num_workloads": 12,
@@ -1095,9 +1223,11 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
             )
             self.assertTrue(found_run, f"Tagged run (seed {tagged_seed}) not found in live history.")
 
-        # 5. Clean up / delete row afterwards
+        # 5. Clean up / delete row afterwards asserting exactly 1 row deleted
         if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_KEY"):
-            store.delete_sync("simulation_runs", {"seed": f"eq.{tagged_seed}"})
+            success, count = store.delete_sync("simulation_runs", {"seed": f"eq.{tagged_seed}"})
+            self.assertTrue(success)
+            self.assertEqual(count, 1)
 
 
 

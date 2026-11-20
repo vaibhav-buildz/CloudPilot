@@ -390,8 +390,9 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
 2. Set **Root Directory** to `frontend`.
 3. Framework preset will automatically detect **Vite**.
 4. Configure Serverless Environment Variables in Vercel:
-   - `BACKEND_URL` or `RENDER_BACKEND_URL`: URL of the Render backend (e.g. `https://cloudpilot-2whk.onrender.com`).
-   - `CLOUDPILOT_API_KEY` or `BACKEND_API_KEY`: Secret shared API key. The serverless proxy (`frontend/api/proxy.js`) automatically attaches `X-API-Key` to backend requests on the server-side, preventing client-side key leakage.
+   - `RENDER_BACKEND_URL`: URL of the Render backend service (e.g. `https://cloudpilot-2whk.onrender.com`).
+   - `CLOUDPILOT_API_KEY`: Secret shared API key. The serverless proxy (`frontend/api/proxy.js`) automatically attaches `X-API-Key` to backend requests on the server-side, preventing client-side key leakage.
+   - `VITE_API_URL`: **Must be left UNSET** in production so client requests route through the secure same-origin `/api/backend` proxy.
 5. Deploy. The Single Page App will build and deploy to your custom `.vercel.app` domain, communicating with the backend via the same-origin `/api/backend` proxy.
 
 ---
@@ -409,9 +410,8 @@ All secrets and host configurations are read from environment variables; none ar
 | `CLOUDPILOT_API_KEY` | Backend (Render) & Vercel Proxy | Shared API key for all data & execution endpoints | None (required in prod) | **Yes** |
 | `SUPABASE_URL` | Backend (Render) | Supabase project REST API URL | None (persistence disabled if unset) | No |
 | `SUPABASE_SERVICE_KEY` | Backend (Render) | Supabase service-role secret key | None (persistence disabled if unset) | **Yes** |
-| `BACKEND_URL` / `RENDER_BACKEND_URL` | Frontend (Vercel) | Backend target for serverless proxy | None | No |
-| `BACKEND_API_KEY` | Frontend (Vercel) | Alias for secret API key used by Vercel proxy | None | **Yes** |
-| `VITE_API_URL` | Frontend (Vite) | Client API base override (defaults to `/api/backend` proxy) | `/api/backend` | No |
+| `RENDER_BACKEND_URL` | Frontend (Vercel) | Backend target for serverless proxy | None | No |
+| `VITE_API_URL` | Frontend (Vite) | Client API base (MUST be unset in production to use proxy) | `/api/backend` | No |
 
 ---
 

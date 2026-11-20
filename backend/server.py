@@ -2,6 +2,7 @@
 
 import argparse
 from dataclasses import asdict, is_dataclass
+import hashlib
 import hmac
 import json
 import math
