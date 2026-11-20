@@ -3,7 +3,8 @@ import './App.css';
 
 const API_BASE = (import.meta.env.VITE_API_URL !== undefined
   ? import.meta.env.VITE_API_URL
-  : 'http://127.0.0.1:8000').replace(/\/$/, '');
+  : (typeof window !== 'undefined' && window.location.origin ? '/api/backend' : 'http://127.0.0.1:8000')
+).replace(/\/$/, '');
 
 const POLICIES = [
   { key: 'predictive_ar', label: 'Predictive (LinearAR ML)', short: 'LinearAR', color: '#38bdf8' },
@@ -608,6 +609,21 @@ export default function App() {
 
           {simResult && (
             <div>
+              {(simResult.store_status === 'not saved' || simResult.persisted === false) && (
+                <div
+                  className="feedback-banner warning"
+                  style={{
+                    background: 'rgba(245, 158, 11, 0.15)',
+                    border: '1px solid rgba(245, 158, 11, 0.4)',
+                    color: '#fef08a',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <span>
+                    ⚠️ Simulation computed successfully, but results were <strong>not saved</strong> to persistent database (storage offline or unreachable).
+                  </span>
+                </div>
+              )}
               <div className="metrics-grid">
                 <div className="metric-card">
                   <span className="metric-label">Placed Workloads</span>

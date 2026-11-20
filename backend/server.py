@@ -249,19 +249,43 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
     """REST request handler for CloudPilot API endpoints."""
 
     server: CloudPilotHTTPServer
+    req_id: str = ""
 
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress default noisy apache stderr logging
         return
 
-    def _log_json(self, method: str, path: str, status: int, duration_ms: float) -> None:
-        """Emits structured JSON access log to stdout."""
+    def _get_client_ip(self) -> str:
+        """Determines client IP behind trusted reverse proxy (e.g. Render).
+
+        Reverse proxies like Render append the connecting client IP to the end of X-Forwarded-For.
+        Using the last entry prevents IP spoofing by clients who prepend forged IPs.
+        """
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
+        if self.client_address:
+            return self.client_address[0]
+        return "127.0.0.1"
+
+    def _get_request_id(self) -> str:
+        req_id = self.headers.get("X-Request-ID")
+        if req_id and req_id.strip():
+            return req_id.strip()[:64]
+        return f"req_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+    def _log_json(self, method: str, path: str, status: int, duration_ms: float, req_id: str, client_ip: str) -> None:
+        """Emits structured JSON access log to stdout without exposing secrets or bodies."""
         entry = {
             "timestamp": round(time.time(), 3),
+            "request_id": req_id,
             "method": method,
             "path": path,
             "status": int(status),
             "duration_ms": round(duration_ms, 2),
+            "client_ip": client_ip,
         }
         try:
             sys.stdout.write(json.dumps(entry) + "\n")
@@ -285,7 +309,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         origin = self._get_allowed_origin()
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Request-ID")
         self.send_header("Vary", "Origin")
 
     def _send_json(self, status: int, payload: Any) -> None:
@@ -294,6 +318,8 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
@@ -304,6 +330,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         message: str,
         code: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         """Returns structured JSON error response without leaking stack traces."""
         error_name = code or HTTPStatus(status).name.lower()
@@ -314,7 +341,19 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         }
         if details:
             payload.update(details)
-        self._send_json(status, payload)
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_html(self, status: int, html: str) -> None:
         body = html.encode("utf-8")
@@ -322,15 +361,20 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:
         """Handles CORS preflight requests."""
+        self.req_id = self._get_request_id()
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Content-Length", "0")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
 
@@ -384,16 +428,28 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         t0 = time.perf_counter()
         status = HTTPStatus.OK
-        client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
-
-        if not _check_rate_limit(client_ip, "default"):
-            status = HTTPStatus.TOO_MANY_REQUESTS
-            self._send_error(status, "Rate limit exceeded. Try again shortly.", code="too_many_requests")
-            self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0)
-            return
+        self.req_id = self._get_request_id()
+        client_ip = self._get_client_ip()
 
         try:
             path = urlparse(self.path).path
+
+            # Production Fail-Closed Gate: Reject non-health endpoints if key is missing in production
+            if is_production() and not os.environ.get("CLOUDPILOT_API_KEY"):
+                if path not in ("/health", "/healthz"):
+                    status = HTTPStatus.SERVICE_UNAVAILABLE
+                    self._send_error(
+                        status,
+                        "Service unavailable: CLOUDPILOT_API_KEY must be configured in production.",
+                        code="production_auth_misconfigured",
+                    )
+                    return
+
+            if not _check_rate_limit(client_ip, "default"):
+                status = HTTPStatus.TOO_MANY_REQUESTS
+                self._send_error(status, "Rate limit exceeded. Try again shortly.", code="too_many_requests")
+                return
+
             if path in ("/", "/index.html"):
                 self._send_html(HTTPStatus.OK, DASHBOARD_HTML)
             elif path in ("/health", "/healthz"):
@@ -403,33 +459,30 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     "uptime_sec": round(time.time() - self.server.service._started_at, 2),
                 })
             elif path in ("/ready", "/api/v1/ready"):
-                is_ready, db_status, code = store.check_ready()
+                is_ready, _, _ = store.check_ready()
                 if is_ready:
-                    self._send_json(HTTPStatus.OK, {
-                        "status": "ready",
-                        "database": db_status,
-                        "service": "CloudPilot Control Plane",
-                    })
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
                 else:
                     status = HTTPStatus.SERVICE_UNAVAILABLE
                     self._send_error(
                         status,
-                        f"Database connection is not ready ({db_status}).",
+                        "Service not ready.",
                         code="service_unavailable",
-                        details={"database": "disconnected", "http_status": code},
+                        details={"status": "not ok"},
                     )
-            elif path == "/api/v1/health":
-                self._send_json(HTTPStatus.OK, self.server.service.get_health())
-            elif path == "/api/v1/cluster":
-                self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
-            elif path == "/api/v1/history":
-                self._send_json(HTTPStatus.OK, store.recent("simulation_runs"))
-            elif path == "/api/v1/store/status":
+            elif path in PROTECTED_GET_PATHS:
                 if not self._authorized():
                     status = HTTPStatus.UNAUTHORIZED
                     self._send_error(status, "Unauthorized. Valid X-API-Key required.", code="unauthorized")
                     return
-                self._send_json(HTTPStatus.OK, store.diagnose())
+                if path == "/api/v1/health":
+                    self._send_json(HTTPStatus.OK, self.server.service.get_health())
+                elif path == "/api/v1/cluster":
+                    self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
+                elif path == "/api/v1/history":
+                    self._send_json(HTTPStatus.OK, store.recent("simulation_runs"))
+                elif path == "/api/v1/store/status":
+                    self._send_json(HTTPStatus.OK, store.diagnose())
             else:
                 status = HTTPStatus.NOT_FOUND
                 self._send_error(status, f"Endpoint '{path}' not found.", code="not_found")
@@ -438,22 +491,37 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             self._send_error(status, "Internal server error.", code="internal_error")
         finally:
-            self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0)
+            self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0, self.req_id, client_ip)
 
     def do_POST(self) -> None:
         t0 = time.perf_counter()
         status = HTTPStatus.OK
         acquired_sim = False
-        client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
+        self.req_id = self._get_request_id()
+        client_ip = self._get_client_ip()
 
         try:
             path = urlparse(self.path).path
+
+            # Production Fail-Closed Gate: Reject non-health endpoints if key is missing in production
+            if is_production() and not os.environ.get("CLOUDPILOT_API_KEY"):
+                status = HTTPStatus.SERVICE_UNAVAILABLE
+                self._send_error(
+                    status,
+                    "Service unavailable: CLOUDPILOT_API_KEY must be configured in production.",
+                    code="production_auth_misconfigured",
+                )
+                return
 
             # Category-based rate limiting
             category = "simulate" if path == "/api/v1/simulate" else "write"
             if not _check_rate_limit(client_ip, category):
                 status = HTTPStatus.TOO_MANY_REQUESTS
-                msg = "Rate limit exceeded. Max 10 simulations per minute." if category == "simulate" else "Rate limit exceeded. Try again shortly."
+                msg = (
+                    "Rate limit exceeded. Max 10 simulations per minute."
+                    if category == "simulate"
+                    else "Rate limit exceeded. Try again shortly."
+                )
                 self._send_error(status, msg, code="too_many_requests")
                 return
 
@@ -505,10 +573,15 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(status, res)
 
             elif path == "/api/v1/simulate":
-                # Concurrency control via semaphore
+                # Concurrency control via semaphore with immediate Retry-After
                 if not SIM_SLOTS.acquire(blocking=False):
-                    status = HTTPStatus.TOO_MANY_REQUESTS
-                    self._send_error(status, "Simulation queue full. Try again shortly.", code="too_many_requests")
+                    status = HTTPStatus.SERVICE_UNAVAILABLE
+                    self._send_error(
+                        status,
+                        "Simulation queue full. Try again shortly.",
+                        code="simulation_queue_full",
+                        extra_headers={"Retry-After": "5"},
+                    )
                     return
                 acquired_sim = True
 
@@ -555,6 +628,12 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         except AllocationError as exc:
             status = HTTPStatus.CONFLICT
             self._send_error(status, str(exc), code="conflict")
+        except SimulationTimeoutError as exc:
+            status = HTTPStatus.GATEWAY_TIMEOUT
+            self._send_error(status, str(exc), code="simulation_timeout")
+        except SimulationLimitError as exc:
+            status = HTTPStatus.BAD_REQUEST
+            self._send_error(status, str(exc), code="simulation_limit_exceeded")
         except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
@@ -562,7 +641,8 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         finally:
             if acquired_sim:
                 SIM_SLOTS.release()
-            self._log_json("POST", self.path, status, (time.perf_counter() - t0) * 1000.0)
+            self._log_json("POST", self.path, status, (time.perf_counter() - t0) * 1000.0, self.req_id, client_ip)
+
 
 
 def create_app_server(
@@ -575,6 +655,10 @@ def create_app_server(
 
 
 def main() -> None:
+    if is_production() and not os.environ.get("CLOUDPILOT_API_KEY"):
+        sys.stderr.write("FATAL: CLOUDPILOT_API_KEY must be configured in production (RENDER=true).\n")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="Run CloudPilot Production Control Plane Server.")
     default_port = int(os.environ.get("PORT", 8000))
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
