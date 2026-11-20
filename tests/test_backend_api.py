@@ -164,6 +164,14 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
     def setUp(self) -> None:
         # Reset cluster state before each HTTP test
         self.service.reset_cluster()
+        with _sim_rate_lock:
+            _sim_rate_history.clear()
+        store.clear_ready_cache()
+        while SIM_SLOTS._value < 2:
+            try:
+                SIM_SLOTS.release()
+            except ValueError:
+                break
 
     def _request(
         self,
@@ -834,6 +842,26 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.server.shutdown()
         cls.server.server_close()
+
+    def setUp(self) -> None:
+        with _sim_rate_lock:
+            _sim_rate_history.clear()
+        store.clear_ready_cache()
+        while SIM_SLOTS._value < 2:
+            try:
+                SIM_SLOTS.release()
+            except ValueError:
+                break
+
+    def tearDown(self) -> None:
+        with _sim_rate_lock:
+            _sim_rate_history.clear()
+        store.clear_ready_cache()
+        while SIM_SLOTS._value < 2:
+            try:
+                SIM_SLOTS.release()
+            except ValueError:
+                break
 
     def _request(
         self,

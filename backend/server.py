@@ -342,12 +342,14 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.send_header("X-Content-Type-Options", "nosniff")
         if self.req_id:
             self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+        self.close_connection = True
 
     def _send_error(
         self,
@@ -370,6 +372,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.send_header("X-Content-Type-Options", "nosniff")
         if self.req_id:
             self.send_header("X-Request-ID", self.req_id)
@@ -379,18 +382,21 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+        self.close_connection = True
 
     def _send_html(self, status: int, html: str) -> None:
         body = html.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.send_header("X-Content-Type-Options", "nosniff")
         if self.req_id:
             self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+        self.close_connection = True
 
     def do_OPTIONS(self) -> None:
         """Handles CORS preflight requests."""
