@@ -255,12 +255,35 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         # Suppress default noisy apache stderr logging
         return
 
+    def _has_valid_api_key(self) -> bool:
+        """Checks if request carries a verified API key matching CLOUDPILOT_API_KEY."""
+        configured_key = os.environ.get("CLOUDPILOT_API_KEY")
+        if not configured_key:
+            return False
+        header_key = self.headers.get("X-API-Key")
+        if not header_key:
+            auth_hdr = self.headers.get("Authorization", "")
+            if auth_hdr.startswith("Bearer "):
+                header_key = auth_hdr[7:].strip()
+            else:
+                header_key = auth_hdr.strip()
+        return bool(header_key and hmac.compare_digest(header_key, configured_key))
+
     def _get_client_ip(self) -> str:
         """Determines client IP behind trusted reverse proxy (e.g. Render).
 
         Reverse proxies like Render append the connecting client IP to the end of X-Forwarded-For.
         Using the last entry prevents IP spoofing by clients who prepend forged IPs.
+
+        When the request carries a verified API key (e.g. from the Vercel proxy), the trusted
+        proxy sets X-CloudPilot-Client-IP. Only requests with a valid API key may use this header;
+        otherwise it falls back to the rightmost entry of X-Forwarded-For.
         """
+        if self._has_valid_api_key():
+            proxy_client_ip = self.headers.get("X-CloudPilot-Client-IP")
+            if proxy_client_ip and proxy_client_ip.strip():
+                return proxy_client_ip.strip()
+
         xff = self.headers.get("X-Forwarded-For")
         if xff:
             parts = [p.strip() for p in xff.split(",") if p.strip()]
@@ -277,7 +300,8 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         return f"req_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
     def _log_json(self, method: str, path: str, status: int, duration_ms: float, req_id: str, client_ip: str) -> None:
-        """Emits structured JSON access log to stdout without exposing secrets or bodies."""
+        """Emits structured JSON access log to stdout with hashed client IP (never raw IP)."""
+        client_ip_hash = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:12]
         entry = {
             "timestamp": round(time.time(), 3),
             "request_id": req_id,
@@ -285,7 +309,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
             "path": path,
             "status": int(status),
             "duration_ms": round(duration_ms, 2),
-            "client_ip": client_ip,
+            "client_ip_hash": client_ip_hash,
         }
         try:
             sys.stdout.write(json.dumps(entry) + "\n")
@@ -383,14 +407,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         configured_key = os.environ.get("CLOUDPILOT_API_KEY")
         if not configured_key:
             return True
-        header_key = self.headers.get("X-API-Key")
-        if not header_key:
-            auth_hdr = self.headers.get("Authorization", "")
-            if auth_hdr.startswith("Bearer "):
-                header_key = auth_hdr[7:].strip()
-            else:
-                header_key = auth_hdr.strip()
-        return bool(header_key and hmac.compare_digest(header_key, configured_key))
+        return self._has_valid_api_key()
 
     def _read_json_body(self) -> Dict[str, Any]:
         raw_len = self.headers.get("Content-Length", "0")

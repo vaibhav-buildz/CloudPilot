@@ -173,15 +173,39 @@ def recent(table: str, limit: int = 50, max_retries: int = 2, timeout: float = 3
     return []
 
 
-def check_ready(timeout: float = 2.5) -> Tuple[bool, str, Optional[int]]:
+_READY_CACHE_LOCK = threading.Lock()
+_READY_CACHE: Optional[Tuple[float, Tuple[bool, str, Optional[int]]]] = None
+
+
+def clear_ready_cache() -> None:
+    """Clears the cached /ready status result (useful for test isolation)."""
+    global _READY_CACHE
+    with _READY_CACHE_LOCK:
+        _READY_CACHE = None
+
+
+def check_ready(timeout: float = 2.5, force: bool = False, cache_ttl_sec: float = 10.0) -> Tuple[bool, str, Optional[int]]:
     """Checks whether the Supabase database connection is ready and healthy.
+
+    Caches the result for 10 seconds to protect upstream database from probe spam.
 
     Returns:
         Tuple of (is_ready: bool, message: str, status_code: Optional[int])
     """
+    global _READY_CACHE
+    if not force:
+        with _READY_CACHE_LOCK:
+            if _READY_CACHE is not None:
+                cached_time, cached_result = _READY_CACHE
+                if (time.time() - cached_time) < cache_ttl_sec:
+                    return cached_result
+
     url, key = _cfg()
     if not url or not key:
-        return True, "standalone", None
+        result = (True, "standalone", None)
+        with _READY_CACHE_LOCK:
+            _READY_CACHE = (time.time(), result)
+        return result
 
     try:
         # Lightweight HEAD/GET check on REST root or simulation_runs with limit 1
@@ -194,12 +218,17 @@ def check_ready(timeout: float = 2.5) -> Tuple[bool, str, Optional[int]]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             code = getattr(resp, "status", getattr(resp, "code", 200))
             if 200 <= code < 300:
-                return True, "connected", code
-            return False, f"HTTP {code}", code
+                result = (True, "connected", code)
+            else:
+                result = (False, f"HTTP {code}", code)
     except urllib.error.HTTPError as exc:
-        return False, f"HTTP {exc.code}", exc.code
+        result = (False, f"HTTP {exc.code}", exc.code)
     except Exception as exc:
-        return False, str(exc), None
+        result = (False, str(exc), None)
+
+    with _READY_CACHE_LOCK:
+        _READY_CACHE = (time.time(), result)
+    return result
 
 
 def diagnose() -> Dict[str, Any]:
@@ -274,23 +303,38 @@ def diagnose() -> Dict[str, Any]:
     }
 
 
-def delete_sync(table: str, match_params: Dict[str, Any], timeout: float = 3.0) -> bool:
-    """Deletes rows from Supabase matching query parameters (e.g. {'seed': 'eq.12345'})."""
+def delete_sync(
+    table: str, match_params: Dict[str, Any], timeout: float = 3.0
+) -> Tuple[bool, int]:
+    """Deletes rows from Supabase matching query parameters (e.g. {'seed': 'eq.12345'}).
+
+    Returns:
+        Tuple of (success: bool, deleted_count: int)
+    """
     url, key = _cfg()
     if not url or not key:
-        return False
+        return False, 0
     query = "&".join(f"{k}={v}" for k, v in match_params.items())
     endpoint = f"{url.rstrip('/')}/rest/v1/{table}?{query}"
     try:
         req = urllib.request.Request(
             endpoint,
-            headers=_headers(key),
+            headers=_headers(key, extra={"Prefer": "return=representation", "Accept": "application/json"}),
             method="DELETE",
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = getattr(resp, "status", getattr(resp, "code", 200))
-            return 200 <= status < 300
+            raw = resp.read()
+            count = 0
+            if raw:
+                try:
+                    data = json.loads(raw.decode("utf-8"))
+                    if isinstance(data, list):
+                        count = len(data)
+                except Exception:
+                    pass
+            return 200 <= status < 300, count
     except Exception as exc:
         _record_save_error(table, getattr(exc, "code", None), str(exc), key)
-        return False
+        return False, 0
 

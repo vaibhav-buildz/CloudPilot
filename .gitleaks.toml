@@ -1,6 +1,28 @@
+title = "CloudPilot Gitleaks Configuration"
+
 [allowlist]
-description = "Allowlist test files and mock tokens in test suites"
+description = "Allowlist test directories, mock strings, and virtual environments"
 paths = [
   '''tests/.*''',
   '''\.venv/.*''',
+  '''node_modules/.*''',
+  '''\.git/.*''',
 ]
+
+[[rules]]
+id = "supabase-secret-key"
+description = "Detects Supabase secret keys with sb_secret_ prefix"
+regex = '''sb_secret_[a-zA-Z0-9_\-]{20,}'''
+keywords = ["sb_secret_"]
+
+[[rules]]
+id = "supabase-service-role-jwt"
+description = "Detects Supabase service-role JWT tokens"
+regex = '''eyJhbGciOi[a-zA-Z0-9_\-]+\.eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+'''
+keywords = ["eyJhbGciOi"]
+
+[[rules]]
+id = "cloudpilot-hardcoded-api-key"
+description = "Detects hardcoded CLOUDPILOT_API_KEY assignments"
+regex = '''(?i)CLOUDPILOT_API_KEY\s*=\s*['\"][a-zA-Z0-9_\-]{8,}['\"]'''
+keywords = ["CLOUDPILOT_API_KEY"]

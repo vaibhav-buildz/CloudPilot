@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 
-const API_BASE = (import.meta.env.VITE_API_URL !== undefined
+const API_BASE = (import.meta.env.VITE_API_URL !== undefined && import.meta.env.VITE_API_URL !== ''
   ? import.meta.env.VITE_API_URL
   : (typeof window !== 'undefined' && window.location.origin ? '/api/backend' : 'http://127.0.0.1:8000')
 ).replace(/\/$/, '');
@@ -50,14 +50,8 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(null);
 
-  // Admin State (In-memory API key only)
-  const [apiKey, setApiKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
+  // Admin State (Serverless proxy attaches authentication automatically)
   const [adminPolicy, setAdminPolicy] = useState('predictive_ar');
-  const [allocId, setAllocId] = useState('');
-  const [allocCpu, setAllocCpu] = useState(2.0);
-  const [allocRam, setAllocRam] = useState(4.0);
-  const [releaseId, setReleaseId] = useState('');
   const [adminFeedback, setAdminFeedback] = useState(null);
   const [adminLoading, setAdminLoading] = useState(false);
 
@@ -236,7 +230,6 @@ export default function App() {
     setAdminLoading(true);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
       const res = await fetch(`${API_BASE}/api/v1/policy`, {
         method: 'POST',
         headers,
@@ -256,77 +249,12 @@ export default function App() {
     }
   };
 
-  const handleAdminAllocate = async (e) => {
-    if (e) e.preventDefault();
-    setAdminFeedback(null);
-    setAdminLoading(true);
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
-      const res = await fetch(`${API_BASE}/api/v1/allocate`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          workload_id: allocId.trim(),
-          cpu: parseFloat(allocCpu),
-          ram: parseFloat(allocRam),
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setAdminFeedback({
-          type: 'success',
-          msg: `Allocated ${data.workload_id} -> ${data.server_id} (Policy: ${data.active_policy})`,
-        });
-        setAllocId('');
-        fetchCluster();
-      } else {
-        setAdminFeedback({ type: 'error', msg: `[${res.status}] ${data.error || 'Allocation rejected'}` });
-      }
-    } catch (err) {
-      setAdminFeedback({ type: 'error', msg: err.message });
-    } finally {
-      setAdminLoading(false);
-    }
-  };
-
-  const handleAdminRelease = async (e) => {
-    if (e) e.preventDefault();
-    setAdminFeedback(null);
-    setAdminLoading(true);
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
-      const res = await fetch(`${API_BASE}/api/v1/release`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ workload_id: releaseId.trim() }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setAdminFeedback({
-          type: 'success',
-          msg: `Released workload ${data.workload_id} from ${data.server_id}`,
-        });
-        setReleaseId('');
-        fetchCluster();
-      } else {
-        setAdminFeedback({ type: 'error', msg: `[${res.status}] ${data.error || 'Release failed'}` });
-      }
-    } catch (err) {
-      setAdminFeedback({ type: 'error', msg: err.message });
-    } finally {
-      setAdminLoading(false);
-    }
-  };
-
   const handleAdminReset = async () => {
     if (!window.confirm('Are you sure you want to reset the cluster? All allocations will be cleared.')) return;
     setAdminFeedback(null);
     setAdminLoading(true);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
       const res = await fetch(`${API_BASE}/api/v1/reset`, { method: 'POST', headers });
       const data = await res.json();
       if (res.ok) {
@@ -931,26 +859,10 @@ export default function App() {
       {/* TAB 5: ADMIN PANEL */}
       {activeTab === 'admin' && (
         <div className="panel">
-          <h2 className="panel-title">Authenticated Control-Plane Actions</h2>
+          <h2 className="panel-title">Cluster Control Actions</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '6px 0 16px 0' }}>
-            Execute protected state-mutating cluster operations. API key is stored strictly in component memory and forwarded as <code>X-API-Key</code>.
+            Operational cluster management. Authenticated securely via Vercel serverless proxy with server-side API key.
           </p>
-
-          <div className="control-group" style={{ maxWidth: '420px', marginBottom: '24px' }}>
-            <label>API Key (Stored in React state only)</label>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input
-                type={showKey ? 'text' : 'password'}
-                placeholder="Enter CLOUDPILOT_API_KEY if configured..."
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                style={{ flex: 1 }}
-              />
-              <button type="button" className="secondary" onClick={() => setShowKey(!showKey)}>
-                {showKey ? 'Hide' : 'Show'}
-              </button>
-            </div>
-          </div>
 
           {adminFeedback && (
             <div className={`feedback-banner ${adminFeedback.type}`}>
@@ -970,6 +882,9 @@ export default function App() {
             {/* Policy Switch */}
             <div className="form-box">
               <h4>Switch Active Policy</h4>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                Change the active allocation strategy evaluated across the live cluster.
+              </p>
               <div className="control-group">
                 <label>Target Policy</label>
                 <select value={adminPolicy} onChange={(e) => setAdminPolicy(e.target.value)}>
@@ -985,73 +900,11 @@ export default function App() {
               </button>
             </div>
 
-            {/* Allocate Workload */}
-            <div className="form-box">
-              <h4>Direct Workload Allocation</h4>
-              <form onSubmit={handleAdminAllocate} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div className="control-group">
-                  <label>Workload ID</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. job-web-01"
-                    required
-                    value={allocId}
-                    onChange={(e) => setAllocId(e.target.value)}
-                  />
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div className="control-group">
-                    <label>CPU Cores</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      value={allocCpu}
-                      onChange={(e) => setAllocCpu(e.target.value)}
-                    />
-                  </div>
-                  <div className="control-group">
-                    <label>RAM (GB)</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      value={allocRam}
-                      onChange={(e) => setAllocRam(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <button type="submit" disabled={adminLoading}>
-                  {adminLoading ? 'Allocating...' : 'Allocate Workload'}
-                </button>
-              </form>
-            </div>
-
-            {/* Release Workload */}
-            <div className="form-box">
-              <h4>Direct Workload Release</h4>
-              <form onSubmit={handleAdminRelease} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div className="control-group">
-                  <label>Workload ID to Evict</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. job-web-01"
-                    required
-                    value={releaseId}
-                    onChange={(e) => setReleaseId(e.target.value)}
-                  />
-                </div>
-                <button type="submit" className="secondary" disabled={adminLoading}>
-                  {adminLoading ? 'Releasing...' : 'Release Workload'}
-                </button>
-              </form>
-            </div>
-
             {/* Cluster Reset */}
             <div className="form-box">
               <h4 style={{ color: 'var(--accent-rose)' }}>Cluster Eviction & Reset</h4>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                Evict all resident workloads and reset server utilization counters to zero.
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                Evict all resident workloads and reset server utilization counters back to zero.
               </p>
               <button className="danger" onClick={handleAdminReset} disabled={adminLoading} style={{ marginTop: 'auto' }}>
                 {adminLoading ? 'Resetting...' : '⚠️ Reset Entire Cluster'}
