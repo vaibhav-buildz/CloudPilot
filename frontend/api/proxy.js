@@ -187,7 +187,7 @@ export default async function handler(req, res) {
       const text = await backendRes.text();
       return res.send(text);
     }
-  } catch (err) {
+  } catch {
     clearTimeout(timeoutTimer);
     return res.status(502).json({
       error: 'Bad Gateway: Upstream Render backend service failure or timeout.',

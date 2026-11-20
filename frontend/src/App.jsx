@@ -135,7 +135,6 @@ export default function App() {
     setSimError(null);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
       const count = Math.min(Math.max(parseInt(simWorkloads, 10) || 1, 1), 1000);
       const res = await fetch(`${API_BASE}/api/v1/simulate`, {
         method: 'POST',
@@ -170,7 +169,6 @@ export default function App() {
         const pol = POLICIES[i];
         setCompareProgress(`Evaluating ${pol.label} (${i + 1}/${POLICIES.length})...`);
         const headers = { 'Content-Type': 'application/json' };
-        if (apiKey) headers['X-API-Key'] = apiKey;
         const res = await fetch(`${API_BASE}/api/v1/simulate`, {
           method: 'POST',
           headers,

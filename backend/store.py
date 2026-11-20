@@ -174,7 +174,7 @@ def recent(table: str, limit: int = 50, max_retries: int = 2, timeout: float = 3
 
 
 _READY_CACHE_LOCK = threading.Lock()
-_READY_CACHE: Optional[Tuple[float, Tuple[bool, str, Optional[int]]]] = None
+_READY_CACHE: Optional[Tuple[str, float, Tuple[bool, str, Optional[int]]]] = None
 
 
 def clear_ready_cache() -> None:
@@ -187,24 +187,26 @@ def clear_ready_cache() -> None:
 def check_ready(timeout: float = 2.5, force: bool = False, cache_ttl_sec: float = 10.0) -> Tuple[bool, str, Optional[int]]:
     """Checks whether the Supabase database connection is ready and healthy.
 
-    Caches the result for 10 seconds to protect upstream database from probe spam.
+    Caches the result for 10 seconds per configuration to protect upstream database from probe spam.
 
     Returns:
         Tuple of (is_ready: bool, message: str, status_code: Optional[int])
     """
     global _READY_CACHE
+    url, key = _cfg()
+    cfg_key = f"{url}:{key}"
+
     if not force:
         with _READY_CACHE_LOCK:
             if _READY_CACHE is not None:
-                cached_time, cached_result = _READY_CACHE
-                if (time.time() - cached_time) < cache_ttl_sec:
+                cached_cfg, cached_time, cached_result = _READY_CACHE
+                if cached_cfg == cfg_key and (time.time() - cached_time) < cache_ttl_sec:
                     return cached_result
 
-    url, key = _cfg()
     if not url or not key:
         result = (True, "standalone", None)
         with _READY_CACHE_LOCK:
-            _READY_CACHE = (time.time(), result)
+            _READY_CACHE = (cfg_key, time.time(), result)
         return result
 
     try:
@@ -227,7 +229,7 @@ def check_ready(timeout: float = 2.5, force: bool = False, cache_ttl_sec: float 
         result = (False, str(exc), None)
 
     with _READY_CACHE_LOCK:
-        _READY_CACHE = (time.time(), result)
+        _READY_CACHE = (cfg_key, time.time(), result)
     return result
 
 

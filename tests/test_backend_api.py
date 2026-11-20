@@ -1102,7 +1102,7 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
             headers_ip1 = {"X-API-Key": "secret_test_key", "X-CloudPilot-Client-IP": "10.0.0.1"}
             st1, data1 = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5}, headers=headers_ip1)
             self.assertEqual(st1, 429)
-            self.assertEqual(data1.get("code"), "rate_limit_exceeded")
+            self.assertEqual(data1.get("code"), "too_many_requests")
 
             # Different client IP 10.0.0.2 should NOT be throttled
             headers_ip2 = {"X-API-Key": "secret_test_key", "X-CloudPilot-Client-IP": "10.0.0.2"}

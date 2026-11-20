@@ -637,15 +637,15 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         except ReleaseError as exc:
             status = HTTPStatus.NOT_FOUND
             self._send_error(status, str(exc), code="not_found")
-        except AllocationError as exc:
-            status = HTTPStatus.CONFLICT
-            self._send_error(status, str(exc), code="conflict")
         except SimulationTimeoutError as exc:
             status = HTTPStatus.GATEWAY_TIMEOUT
             self._send_error(status, str(exc), code="simulation_timeout")
         except SimulationLimitError as exc:
             status = HTTPStatus.BAD_REQUEST
             self._send_error(status, str(exc), code="simulation_limit_exceeded")
+        except AllocationError as exc:
+            status = HTTPStatus.CONFLICT
+            self._send_error(status, str(exc), code="conflict")
         except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
