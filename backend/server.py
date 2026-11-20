@@ -463,13 +463,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 if is_ready:
                     self._send_json(HTTPStatus.OK, {"status": "ok"})
                 else:
-                    status = HTTPStatus.SERVICE_UNAVAILABLE
-                    self._send_error(
-                        status,
-                        "Service not ready.",
-                        code="service_unavailable",
-                        details={"status": "not ok"},
-                    )
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"status": "not ok"})
             elif path in PROTECTED_GET_PATHS:
                 if not self._authorized():
                     status = HTTPStatus.UNAUTHORIZED
@@ -575,7 +569,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/v1/simulate":
                 # Concurrency control via semaphore with immediate Retry-After
                 if not SIM_SLOTS.acquire(blocking=False):
-                    status = HTTPStatus.SERVICE_UNAVAILABLE
+                    status = HTTPStatus.TOO_MANY_REQUESTS
                     self._send_error(
                         status,
                         "Simulation queue full. Try again shortly.",

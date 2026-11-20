@@ -1,12 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, cleanup } from '@testing-library/react';
 import App from './App';
 
 describe('App Cold-Start Resilience and Store Status Warning', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   it('renders cold-start wake-up notification with retry counter when backend is waking up', async () => {
@@ -94,7 +99,9 @@ describe('App Cold-Start Resilience and Store Status Warning', () => {
     });
 
     // Verify "not saved" visible warning is displayed
-    const warning = screen.getByText(/results were not saved to persistent database/i);
+    const warning = screen.getByText((content, element) => {
+      return element?.classList?.contains('feedback-banner') && element?.textContent?.includes('not saved');
+    });
     expect(warning).toBeTruthy();
   });
 });

@@ -389,15 +389,30 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         os.environ["CLOUDPILOT_API_KEY"] = "test-secret-key"
         try:
             # Public GET endpoints do NOT require key
-            st, _ = self._request("GET", "/healthz")
+            st, data = self._request("GET", "/healthz")
             self.assertEqual(st, 200)
-            st, _ = self._request("GET", "/health")
+            st, data = self._request("GET", "/health")
             self.assertEqual(st, 200)
+            self.assertEqual(data.get("status"), "ok")
+
+            st, data = self._request("GET", "/ready")
+            self.assertEqual(st, 200)
+            self.assertEqual(data, {"status": "ok"})
+
+            # Data-reading endpoints require key when CLOUDPILOT_API_KEY is configured
             st, _ = self._request("GET", "/api/v1/health")
+            self.assertEqual(st, 401)
+            st, _ = self._request("GET", "/api/v1/health", headers={"X-API-Key": "test-secret-key"})
             self.assertEqual(st, 200)
+
             st, _ = self._request("GET", "/api/v1/cluster")
+            self.assertEqual(st, 401)
+            st, _ = self._request("GET", "/api/v1/cluster", headers={"X-API-Key": "test-secret-key"})
             self.assertEqual(st, 200)
+
             st, _ = self._request("GET", "/api/v1/history")
+            self.assertEqual(st, 401)
+            st, _ = self._request("GET", "/api/v1/history", headers={"X-API-Key": "test-secret-key"})
             self.assertEqual(st, 200)
 
             # Protected diagnostic GET endpoint requires key
@@ -438,6 +453,7 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
             self.assertEqual(st, 401)
             st, _ = self._request("POST", "/api/v1/reset", {})
             self.assertEqual(st, 401)
+
 
             # Providing valid key unlocks protected endpoints
             st, _ = self._request(
@@ -852,8 +868,7 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         try:
             st, data = self._request("GET", "/ready")
             self.assertEqual(st, 200)
-            self.assertEqual(data.get("status"), "ready")
-            self.assertEqual(data.get("database"), "standalone")
+            self.assertEqual(data, {"status": "ok"})
         finally:
             if old_url is not None:
                 os.environ["SUPABASE_URL"] = old_url
@@ -866,8 +881,108 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         st, data = self._request("GET", "/ready")
         self.assertEqual(st, 503)
         self.assertEqual(data.get("code"), "service_unavailable")
-        self.assertEqual(data.get("database"), "disconnected")
-        self.assertIn("Database connection is not ready", data.get("error", ""))
+        self.assertEqual(data.get("details", {}).get("status"), "not ok")
+
+    def test_production_fail_closed_without_api_key(self) -> None:
+        old_render = os.environ.get("RENDER")
+        old_key = os.environ.get("CLOUDPILOT_API_KEY")
+        try:
+            os.environ["RENDER"] = "true"
+            if "CLOUDPILOT_API_KEY" in os.environ:
+                del os.environ["CLOUDPILOT_API_KEY"]
+
+            # Health remains accessible
+            st, data = self._request("GET", "/health")
+            self.assertEqual(st, 200)
+
+            # All non-health endpoints fail-closed with 503
+            st, data = self._request("GET", "/ready")
+            self.assertEqual(st, 503)
+            self.assertEqual(data.get("code"), "production_auth_misconfigured")
+
+            st, data = self._request("GET", "/api/v1/cluster")
+            self.assertEqual(st, 503)
+            self.assertEqual(data.get("code"), "production_auth_misconfigured")
+
+            st, data = self._request("POST", "/api/v1/simulate", {"num_workloads": 10})
+            self.assertEqual(st, 503)
+            self.assertEqual(data.get("code"), "production_auth_misconfigured")
+        finally:
+            if old_render is not None:
+                os.environ["RENDER"] = old_render
+            else:
+                os.environ.pop("RENDER", None)
+            if old_key is not None:
+                os.environ["CLOUDPILOT_API_KEY"] = old_key
+
+    def test_spoofed_x_forwarded_for_cannot_bypass_rate_limit(self) -> None:
+        trusted_proxy_ip = "198.51.100.99"
+        headers_base = {"Content-Type": "application/json"}
+
+        # Exhaust rate limit of 10 simulations per minute for trusted_proxy_ip
+        for i in range(10):
+            spoofed_xff = f"spoofed-{i}.example.com, {trusted_proxy_ip}"
+            hdrs = dict(headers_base)
+            hdrs["X-Forwarded-For"] = spoofed_xff
+            st, _ = self._request("POST", "/api/v1/simulate", {"policy": "first_fit", "num_workloads": 5}, headers=hdrs)
+            self.assertEqual(st, 200)
+
+        # 11th request with a brand new spoofed client IP prepended must still be rejected
+        hdrs = dict(headers_base)
+        hdrs["X-Forwarded-For"] = f"completely-new-spoofed.com, {trusted_proxy_ip}"
+        st_blocked, data_blocked = self._request(
+            "POST",
+            "/api/v1/simulate",
+            {"policy": "first_fit", "num_workloads": 5},
+            headers=hdrs,
+        )
+        self.assertEqual(st_blocked, 429)
+        self.assertEqual(data_blocked.get("code"), "too_many_requests")
+
+    def test_simulation_concurrency_slots_busy_immediate_503_retry_after(self) -> None:
+        from backend.server import SIM_SLOTS
+        # Acquire both slots to simulate complete saturation
+        slot1 = SIM_SLOTS.acquire(blocking=False)
+        slot2 = SIM_SLOTS.acquire(blocking=False)
+        self.assertTrue(slot1)
+        self.assertTrue(slot2)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", self.server_port, timeout=5.0)
+            body = json.dumps({"policy": "first_fit", "num_workloads": 10})
+            conn.request("POST", "/api/v1/simulate", body, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 503)
+            self.assertEqual(resp.getheader("Retry-After"), "5")
+            data = json.loads(resp.read().decode("utf-8"))
+            self.assertEqual(data.get("code"), "simulation_queue_full")
+            conn.close()
+        finally:
+            SIM_SLOTS.release()
+            SIM_SLOTS.release()
+
+    def test_simulation_wall_clock_timeout_and_caps(self) -> None:
+        from allocation.cluster import Cluster
+        from allocation.config import build_heterogeneous_specs
+        from allocation.heuristics import FirstFit
+        from allocation.simulator import TraceSimulator
+        from allocation.exceptions import SimulationTimeoutError, SimulationLimitError
+        from datasets.trace_loader import generate_alibaba_style_trace
+
+        cluster = Cluster(build_heterogeneous_specs(2))
+        trace = generate_alibaba_style_trace(n=50, seed=42)
+        sim = TraceSimulator(cluster=cluster, allocator=FirstFit())
+
+        # Test wall-clock timeout
+        with self.assertRaises(SimulationTimeoutError):
+            sim.run(trace, reset_cluster=True, wall_clock_timeout_sec=0.000001)
+
+        # Test step limit cap
+        with self.assertRaises(SimulationLimitError):
+            sim.run(trace, reset_cluster=True, max_steps=5)
+
+        # Test simulated duration cap
+        with self.assertRaises(SimulationLimitError):
+            sim.run(trace, reset_cluster=True, max_duration_sec=0.1)
 
     def test_input_validation_bounds_num_workloads(self) -> None:
         # Exceeds maximum 1000 workloads cap
@@ -927,24 +1042,37 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         self.assertEqual(data.get("code"), "not_found")
         self.assertNotIn("Traceback", json.dumps(data))
 
+    @unittest.skipUnless(os.environ.get("RUN_LIVE_TESTS") == "1", "Live Render tests gated behind RUN_LIVE_TESTS=1")
     def test_live_render_end_to_end_simulation_and_history(self) -> None:
-        """Integration test against live Render backend: verifies simulation saves and appears in history."""
-        render_url = "https://cloudpilot-2whk.onrender.com"
+        """Integration test against live Render backend: verifies simulation saves, appears in history, and cleans up."""
+        render_url = os.environ.get("RENDER_BACKEND_URL", "https://cloudpilot-2whk.onrender.com")
+        api_key = os.environ.get("CLOUDPILOT_API_KEY", "")
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-API-Key"] = api_key
+
         try:
             # 1. Health check to ensure remote backend is awake
-            req_h = urllib.request.Request(f"{render_url}/api/v1/health")
+            req_h = urllib.request.Request(f"{render_url}/health")
             with urllib.request.urlopen(req_h, timeout=10.0) as resp:
                 if resp.status != 200:
-                    self.skipTest("Live Render backend not returning 200")
+                    self.skipTest("Live Render backend not returning 200 on /health")
         except Exception as exc:
             self.skipTest(f"Live Render backend unreachable ({exc}); skipping live integration test.")
 
-        # 2. Trigger on-demand simulation
-        sim_payload = json.dumps({"policy": "round_robin", "num_workloads": 12, "seed": 99}).encode("utf-8")
+        # 2. Trigger on-demand simulation with tagged seed
+        tagged_seed = 999000 + (int(time.time()) % 900)
+        sim_payload = json.dumps({
+            "policy": "round_robin",
+            "num_workloads": 12,
+            "seed": tagged_seed,
+        }).encode("utf-8")
+
         req_sim = urllib.request.Request(
             f"{render_url}/api/v1/simulate",
             data=sim_payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         with urllib.request.urlopen(req_sim, timeout=15.0) as resp:
@@ -955,18 +1083,23 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         # 3. Allow time for Supabase record propagation
         time.sleep(2.0)
 
-        # 4. Verify run appears in History
-        req_hist = urllib.request.Request(f"{render_url}/api/v1/history")
+        # 4. Verify tagged run appears in History
+        req_hist = urllib.request.Request(f"{render_url}/api/v1/history", headers=headers)
         with urllib.request.urlopen(req_hist, timeout=10.0) as resp:
             self.assertEqual(resp.status, 200)
             hist = json.loads(resp.read().decode("utf-8"))
             self.assertIsInstance(hist, list)
             self.assertGreater(len(hist), 0)
             found_run = any(
-                entry.get("policy") == "round_robin" and entry.get("num_workloads") == 12
+                entry.get("seed") == tagged_seed or (entry.get("result", {}).get("seed") == tagged_seed)
                 for entry in hist
             )
-            self.assertTrue(found_run, "Simulation run was not found in Supabase history on live Render backend.")
+            self.assertTrue(found_run, f"Tagged run (seed {tagged_seed}) not found in live history.")
+
+        # 5. Clean up / delete row afterwards
+        if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_KEY"):
+            store.delete_sync("simulation_runs", {"seed": f"eq.{tagged_seed}"})
+
 
 
 if __name__ == "__main__":
