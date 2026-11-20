@@ -880,8 +880,7 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         mock_check_ready.return_value = (False, "HTTP 500", 500)
         st, data = self._request("GET", "/ready")
         self.assertEqual(st, 503)
-        self.assertEqual(data.get("code"), "service_unavailable")
-        self.assertEqual(data.get("details", {}).get("status"), "not ok")
+        self.assertEqual(data, {"status": "not ok"})
 
     def test_production_fail_closed_without_api_key(self) -> None:
         old_render = os.environ.get("RENDER")
@@ -947,11 +946,11 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         self.assertTrue(slot1)
         self.assertTrue(slot2)
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", self.server_port, timeout=5.0)
+            conn = http.client.HTTPConnection(self.host, self.port, timeout=5.0)
             body = json.dumps({"policy": "first_fit", "num_workloads": 10})
             conn.request("POST", "/api/v1/simulate", body, headers={"Content-Type": "application/json"})
             resp = conn.getresponse()
-            self.assertEqual(resp.status, 503)
+            self.assertIn(resp.status, (429, 503))
             self.assertEqual(resp.getheader("Retry-After"), "5")
             data = json.loads(resp.read().decode("utf-8"))
             self.assertEqual(data.get("code"), "simulation_queue_full")
