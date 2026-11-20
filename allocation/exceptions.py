@@ -34,3 +34,14 @@ class ReleaseError(AllocationError, ValueError):
     """Raised when attempting to release more resources than currently allocated or invalid release parameters."""
     pass
 
+
+class SimulationTimeoutError(AllocationError, TimeoutError):
+    """Raised when a discrete trace simulation exceeds wall-clock execution timeout."""
+    pass
+
+
+class SimulationLimitError(AllocationError, ValueError):
+    """Raised when a simulation exceeds maximum allowed execution steps or simulated duration."""
+    pass
+
+
