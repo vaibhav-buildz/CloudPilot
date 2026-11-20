@@ -10,12 +10,19 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from allocation.exceptions import AllocationError, InvalidResourceError, ReleaseError
+from allocation.exceptions import (
+    AllocationError,
+    InvalidResourceError,
+    ReleaseError,
+    SimulationLimitError,
+    SimulationTimeoutError,
+)
 import backend.store as store
 from backend.service import CloudPilotService
 from backend.validators import (
@@ -50,6 +57,23 @@ PROTECTED_POST_PATHS = {
     "/api/v1/reset",
     "/api/v1/simulate",
 }
+
+PROTECTED_GET_PATHS = {
+    "/api/v1/cluster",
+    "/api/v1/history",
+    "/api/v1/store/status",
+    "/api/v1/health",
+}
+
+
+def is_production() -> bool:
+    """Checks whether the server is running in a production environment (e.g. Render)."""
+    return bool(
+        os.environ.get("RENDER")
+        or os.environ.get("ENVIRONMENT", "").strip().lower() == "production"
+        or os.environ.get("NODE_ENV", "").strip().lower() == "production"
+    )
+
 
 
 def _check_rate_limit(client_ip: str, category: str) -> bool:
