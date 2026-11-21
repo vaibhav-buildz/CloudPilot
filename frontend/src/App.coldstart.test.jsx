@@ -32,6 +32,24 @@ describe('App Cold-Start Resilience and Store Status Warning', () => {
     expect(retryBtn).toBeTruthy();
   });
 
+  it('treats proxy 502, 503, 504 on /health as server waking up and renders waking banner', async () => {
+    // Return 502 Bad Gateway from serverless proxy
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: () => Promise.resolve({ error: 'Bad Gateway', code: 'upstream_unavailable' }),
+    });
+
+    render(<App />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const wakeupBanner = screen.getByText(/Backend is waking up \(Render free tier cold start may take 30–60s\)/i);
+    expect(wakeupBanner).toBeTruthy();
+  });
+
   it('displays a visible warning banner when simulation returns store_status not saved', async () => {
     // Mock health check and cluster
     global.fetch.mockImplementation((url) => {

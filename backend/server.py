@@ -45,6 +45,11 @@ SIM_RATE_WINDOW = 60.0
 _sim_rate_lock = threading.Lock()
 _sim_rate_history: Dict[str, List[float]] = {}
 
+MUTATION_RATE_LIMIT = 5
+MUTATION_RATE_WINDOW = 60.0
+_mutation_rate_lock = threading.Lock()
+_mutation_rate_history: Dict[str, List[float]] = {}
+
 GENERAL_RATE_LIMIT = 120
 GENERAL_RATE_WINDOW = 60.0
 _general_rate_lock = threading.Lock()
@@ -88,6 +93,15 @@ def _check_rate_limit(client_ip: str, category: str) -> bool:
                 return False
             recent.append(now)
             _sim_rate_history[client_ip] = recent
+            return True
+    elif category == "mutation":
+        with _mutation_rate_lock:
+            recent = [t for t in _mutation_rate_history.get(client_ip, []) if now - t < MUTATION_RATE_WINDOW]
+            if len(recent) >= MUTATION_RATE_LIMIT:
+                _mutation_rate_history[client_ip] = recent
+                return False
+            recent.append(now)
+            _mutation_rate_history[client_ip] = recent
             return True
     else:
         with _general_rate_lock:
@@ -351,6 +365,16 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.close_connection = True
 
+    def _drain_body(self) -> None:
+        """Safely drain pending request body so socket teardown does not abort connection."""
+        try:
+            raw_len = self.headers.get("Content-Length", "0")
+            length = int(raw_len)
+            if 0 < length <= MAX_BODY:
+                self.rfile.read(length)
+        except Exception:
+            pass
+
     def _send_error(
         self,
         status: int,
@@ -360,6 +384,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         extra_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         """Returns structured JSON error response without leaking stack traces."""
+        self._drain_body()
         error_name = code or HTTPStatus(status).name.lower()
         payload: Dict[str, Any] = {
             "error": message,
@@ -532,14 +557,21 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 return
 
             # Category-based rate limiting
-            category = "simulate" if path == "/api/v1/simulate" else "write"
+            if path == "/api/v1/simulate":
+                category = "simulate"
+            elif path in ("/api/v1/policy", "/api/v1/reset"):
+                category = "mutation"
+            else:
+                category = "write"
+
             if not _check_rate_limit(client_ip, category):
                 status = HTTPStatus.TOO_MANY_REQUESTS
-                msg = (
-                    "Rate limit exceeded. Max 10 simulations per minute."
-                    if category == "simulate"
-                    else "Rate limit exceeded. Try again shortly."
-                )
+                if category == "simulate":
+                    msg = "Rate limit exceeded. Max 10 simulations per minute."
+                elif category == "mutation":
+                    msg = "Rate limit exceeded. Max 5 cluster state mutations per minute."
+                else:
+                    msg = "Rate limit exceeded. Try again shortly."
                 self._send_error(status, msg, code="too_many_requests")
                 return
 

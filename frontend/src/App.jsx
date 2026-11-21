@@ -70,7 +70,12 @@ export default function App() {
         setBackendStatus('healthy');
         setWakeAttempts(0);
       } else {
-        setBackendStatus('down');
+        // Treat proxy 502/503/504 as backend waking up (cold start) and keep polling
+        if ([502, 503, 504].includes(res.status)) {
+          setBackendStatus('waking');
+        } else {
+          setBackendStatus('down');
+        }
         setWakeAttempts((prev) => prev + 1);
       }
     } catch {

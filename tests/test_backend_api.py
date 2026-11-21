@@ -15,7 +15,15 @@ from unittest.mock import MagicMock, patch
 
 from allocation.exceptions import InvalidResourceError, ReleaseError, SimulationLimitError, SimulationTimeoutError
 from allocation.workload import Workload
-from backend.server import SIM_SLOTS, _sim_rate_history, _sim_rate_lock, create_app_server
+from backend.server import (
+    MUTATION_RATE_LIMIT,
+    SIM_SLOTS,
+    _mutation_rate_history,
+    _mutation_rate_lock,
+    _sim_rate_history,
+    _sim_rate_lock,
+    create_app_server,
+)
 import backend.store as store
 from backend.service import CloudPilotService
 from backend.smoke_test import run_smoke_suite
@@ -166,6 +174,8 @@ class TestCloudPilotHTTPServer(unittest.TestCase):
         self.service.reset_cluster()
         with _sim_rate_lock:
             _sim_rate_history.clear()
+        with _mutation_rate_lock:
+            _mutation_rate_history.clear()
         store.clear_ready_cache()
         while SIM_SLOTS._value < 2:
             try:
@@ -846,6 +856,8 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
     def setUp(self) -> None:
         with _sim_rate_lock:
             _sim_rate_history.clear()
+        with _mutation_rate_lock:
+            _mutation_rate_history.clear()
         store.clear_ready_cache()
         while SIM_SLOTS._value < 2:
             try:
@@ -856,6 +868,8 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
     def tearDown(self) -> None:
         with _sim_rate_lock:
             _sim_rate_history.clear()
+        with _mutation_rate_lock:
+            _mutation_rate_history.clear()
         store.clear_ready_cache()
         while SIM_SLOTS._value < 2:
             try:
@@ -1256,6 +1270,64 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
             success, count = store.delete_sync("simulation_runs", {"seed": f"eq.{tagged_seed}"})
             self.assertTrue(success)
             self.assertEqual(count, 1)
+
+    def test_mutation_endpoints_stricter_rate_limit_5_per_minute(self) -> None:
+        """POST /reset and POST /policy enforce a strict 5 req/min per IP rate limit."""
+        with _mutation_rate_lock:
+            _mutation_rate_history.clear()
+        with _sim_rate_lock:
+            _sim_rate_history.clear()
+
+        old_key = os.environ.get("CLOUDPILOT_API_KEY")
+        os.environ["CLOUDPILOT_API_KEY"] = "mutation_test_key"
+        try:
+            headers = {
+                "X-API-Key": "mutation_test_key",
+                "X-CloudPilot-Client-IP": "198.51.100.77",
+            }
+
+            # 5 mutation requests should succeed (testing both /policy and /reset)
+            for i in range(4):
+                st, data = self._request("POST", "/api/v1/policy", {"policy": "best_fit"}, headers=headers)
+                self.assertEqual(st, 200, f"Request {i+1} failed with status {st}: {data}")
+                self.assertEqual(data.get("active_policy"), "best_fit")
+
+            st_reset, data_reset = self._request("POST", "/api/v1/reset", {}, headers=headers)
+            self.assertEqual(st_reset, 200, f"Reset request failed with status {st_reset}: {data_reset}")
+            self.assertTrue(data_reset.get("reset"))
+
+            # 6th mutation request must fail with 429
+            st6, data6 = self._request("POST", "/api/v1/policy", {"policy": "first_fit"}, headers=headers)
+            self.assertEqual(st6, 429)
+            self.assertEqual(data6.get("code"), "too_many_requests")
+            self.assertIn("Max 5 cluster state mutations per minute", data6.get("error", ""))
+
+            # Different client IP is not blocked
+            headers2 = {
+                "X-API-Key": "mutation_test_key",
+                "X-CloudPilot-Client-IP": "198.51.100.88",
+            }
+            st_other, data_other = self._request("POST", "/api/v1/policy", {"policy": "first_fit"}, headers=headers2)
+            self.assertEqual(st_other, 200)
+
+            # Simulate endpoint uses independent 10 req/min quota, so 198.51.100.77 can still simulate
+            st_sim, data_sim = self._request(
+                "POST",
+                "/api/v1/simulate",
+                {"policy": "first_fit", "num_workloads": 5},
+                headers=headers,
+            )
+            self.assertEqual(st_sim, 200)
+            self.assertIn("placed_count", data_sim)
+        finally:
+            if old_key is not None:
+                os.environ["CLOUDPILOT_API_KEY"] = old_key
+            else:
+                os.environ.pop("CLOUDPILOT_API_KEY", None)
+            with _mutation_rate_lock:
+                _mutation_rate_history.clear()
+            with _sim_rate_lock:
+                _sim_rate_history.clear()
 
 
 

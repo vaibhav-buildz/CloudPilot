@@ -1,5 +1,8 @@
 title = "CloudPilot Gitleaks Configuration"
 
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Allowlist test directories, mock strings, and virtual environments"
 paths = [
