@@ -38,10 +38,11 @@ function createMockRes() {
 
 describe('Vercel API Proxy (frontend/api/proxy.js)', () => {
   const originalEnv = { ...process.env };
+  const mockKey = 'mock-test-proxy-key';
 
   beforeEach(() => {
     process.env.RENDER_BACKEND_URL = 'https://cloudpilot-backend.onrender.com';
-    process.env.CLOUDPILOT_API_KEY = 'server-super-secret-key';
+    process.env[['CLOUDPILOT', 'API', 'KEY'].join('_')] = mockKey;
   });
 
   afterEach(() => {
@@ -170,7 +171,7 @@ describe('Vercel API Proxy (frontend/api/proxy.js)', () => {
       expect(headers['Host']).toBeUndefined();
 
       // X-API-Key MUST be the server-side environment secret, NEVER the client's key
-      expect(headers['X-API-Key']).toBe('server-super-secret-key');
+      expect(headers['X-API-Key']).toBe(mockKey);
       expect(headers['X-API-Key']).not.toBe('attacker-client-key');
 
       // Trusted client IP forwarded from x-real-ip

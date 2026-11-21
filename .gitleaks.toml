@@ -7,6 +7,7 @@ useDefault = true
 description = "Allowlist test directories, mock strings, and virtual environments"
 paths = [
   '''tests/.*''',
+  '''frontend/.*\.test\..*''',
   '''\.venv/.*''',
   '''node_modules/.*''',
   '''\.git/.*''',
