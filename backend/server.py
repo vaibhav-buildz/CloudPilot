@@ -2,6 +2,7 @@
 
 import argparse
 from dataclasses import asdict, is_dataclass
+import hashlib
 import hmac
 import json
 import math
@@ -10,29 +11,110 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from allocation.exceptions import AllocationError, InvalidResourceError, ReleaseError
+from allocation.exceptions import (
+    AllocationError,
+    InvalidResourceError,
+    ReleaseError,
+    SimulationLimitError,
+    SimulationTimeoutError,
+)
 import backend.store as store
 from backend.service import CloudPilotService
+from backend.validators import (
+    ALLOWED_POLICIES,
+    validate_allocate_payload,
+    validate_policy_payload,
+    validate_release_payload,
+    validate_simulate_payload,
+)
 
 MAX_BODY = 64 * 1024  # 64 KB
 SIM_SLOTS = threading.BoundedSemaphore(2)
 
+DEFAULT_ALLOWED_ORIGIN = "https://cloud-pilot-gamma.vercel.app"
+
+# Rate limits: (max_requests, window_seconds)
 SIM_RATE_LIMIT = 10
-SIM_RATE_WINDOW = 60.0  # seconds
+SIM_RATE_WINDOW = 60.0
 _sim_rate_lock = threading.Lock()
 _sim_rate_history: Dict[str, List[float]] = {}
 
+MUTATION_RATE_LIMIT = 5
+MUTATION_RATE_WINDOW = 60.0
+_mutation_rate_lock = threading.Lock()
+_mutation_rate_history: Dict[str, List[float]] = {}
+
+GENERAL_RATE_LIMIT = 120
+GENERAL_RATE_WINDOW = 60.0
+_general_rate_lock = threading.Lock()
+_general_rate_history: Dict[str, List[float]] = {}
+
+# All state-mutating and simulation endpoints are protected
 PROTECTED_POST_PATHS = {
     "/api/v1/policy",
     "/api/v1/allocate",
     "/api/v1/release",
     "/api/v1/reset",
+    "/api/v1/simulate",
 }
+
+PROTECTED_GET_PATHS = {
+    "/api/v1/cluster",
+    "/api/v1/history",
+    "/api/v1/store/status",
+    "/api/v1/health",
+}
+
+
+def is_production() -> bool:
+    """Checks whether the server is running in a production environment (e.g. Render)."""
+    return bool(
+        os.environ.get("RENDER")
+        or os.environ.get("ENVIRONMENT", "").strip().lower() == "production"
+        or os.environ.get("NODE_ENV", "").strip().lower() == "production"
+    )
+
+
+
+def _check_rate_limit(client_ip: str, category: str) -> Tuple[bool, int]:
+    """Checks per-IP rate limit for a given endpoint category. Returns (is_allowed, retry_after_sec)."""
+    now = time.time()
+    if category == "simulate":
+        with _sim_rate_lock:
+            recent = [t for t in _sim_rate_history.get(client_ip, []) if now - t < SIM_RATE_WINDOW]
+            if len(recent) >= SIM_RATE_LIMIT:
+                _sim_rate_history[client_ip] = recent
+                retry_after = max(1, int(SIM_RATE_WINDOW - (now - recent[0])) + 1)
+                return False, retry_after
+            recent.append(now)
+            _sim_rate_history[client_ip] = recent
+            return True, 0
+    elif category == "mutation":
+        with _mutation_rate_lock:
+            recent = [t for t in _mutation_rate_history.get(client_ip, []) if now - t < MUTATION_RATE_WINDOW]
+            if len(recent) >= MUTATION_RATE_LIMIT:
+                _mutation_rate_history[client_ip] = recent
+                retry_after = max(1, int(MUTATION_RATE_WINDOW - (now - recent[0])) + 1)
+                return False, retry_after
+            recent.append(now)
+            _mutation_rate_history[client_ip] = recent
+            return True, 0
+    else:
+        with _general_rate_lock:
+            recent = [t for t in _general_rate_history.get(client_ip, []) if now - t < GENERAL_RATE_WINDOW]
+            if len(recent) >= GENERAL_RATE_LIMIT:
+                _general_rate_history[client_ip] = recent
+                retry_after = max(1, int(GENERAL_RATE_WINDOW - (now - recent[0])) + 1)
+                return False, retry_after
+            recent.append(now)
+            _general_rate_history[client_ip] = recent
+            return True, 0
 
 
 class PayloadTooLargeError(Exception):
@@ -185,19 +267,67 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
     """REST request handler for CloudPilot API endpoints."""
 
     server: CloudPilotHTTPServer
+    req_id: str = ""
 
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress default noisy apache stderr logging
         return
 
-    def _log_json(self, method: str, path: str, status: int, duration_ms: float) -> None:
-        """Emits structured JSON access log to stdout."""
+    def _has_valid_api_key(self) -> bool:
+        """Checks if request carries a verified API key matching CLOUDPILOT_API_KEY."""
+        configured_key = os.environ.get("CLOUDPILOT_API_KEY")
+        if not configured_key:
+            return False
+        header_key = self.headers.get("X-API-Key")
+        if not header_key:
+            auth_hdr = self.headers.get("Authorization", "")
+            if auth_hdr.startswith("Bearer "):
+                header_key = auth_hdr[7:].strip()
+            else:
+                header_key = auth_hdr.strip()
+        return bool(header_key and hmac.compare_digest(header_key, configured_key))
+
+    def _get_client_ip(self) -> str:
+        """Determines client IP behind trusted reverse proxy (e.g. Render).
+
+        Reverse proxies like Render append the connecting client IP to the end of X-Forwarded-For.
+        Using the last entry prevents IP spoofing by clients who prepend forged IPs.
+
+        When the request carries a verified API key (e.g. from the Vercel proxy), the trusted
+        proxy sets X-CloudPilot-Client-IP. Only requests with a valid API key may use this header;
+        otherwise it falls back to the rightmost entry of X-Forwarded-For.
+        """
+        if self._has_valid_api_key():
+            proxy_client_ip = self.headers.get("X-CloudPilot-Client-IP")
+            if proxy_client_ip and proxy_client_ip.strip():
+                return proxy_client_ip.strip()
+
+        xff = self.headers.get("X-Forwarded-For")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
+        if self.client_address:
+            return self.client_address[0]
+        return "127.0.0.1"
+
+    def _get_request_id(self) -> str:
+        req_id = self.headers.get("X-Request-ID")
+        if req_id and req_id.strip():
+            return req_id.strip()[:64]
+        return f"req_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+    def _log_json(self, method: str, path: str, status: int, duration_ms: float, req_id: str, client_ip: str) -> None:
+        """Emits structured JSON access log to stdout with hashed client IP (never raw IP)."""
+        client_ip_hash = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:12]
         entry = {
             "timestamp": round(time.time(), 3),
+            "request_id": req_id,
             "method": method,
             "path": path,
             "status": int(status),
             "duration_ms": round(duration_ms, 2),
+            "client_ip_hash": client_ip_hash,
         }
         try:
             sys.stdout.write(json.dumps(entry) + "\n")
@@ -205,50 +335,120 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _get_allowed_origin(self) -> str:
+        """Determines allowed CORS origin from ALLOWED_ORIGIN env var without wildcard default."""
+        configured = os.environ.get("ALLOWED_ORIGIN", "").strip()
+        if not configured:
+            return DEFAULT_ALLOWED_ORIGIN
+        allowed_list = [o.strip() for o in configured.split(",") if o.strip()]
+        client_origin = self.headers.get("Origin", "")
+        if client_origin and client_origin in allowed_list:
+            return client_origin
+        return allowed_list[0] if allowed_list else DEFAULT_ALLOWED_ORIGIN
+
     def _send_cors_headers(self) -> None:
-        """Emits standard CORS headers configurable via ALLOWED_ORIGIN env var."""
-        origin = os.environ.get("ALLOWED_ORIGIN", "*")
+        """Emits standard CORS headers configurable via ALLOWED_ORIGIN env var. No wildcard."""
+        origin = self._get_allowed_origin()
         self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Request-ID")
+        self.send_header("Vary", "Origin")
 
     def _send_json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+        self.close_connection = True
+
+    def _drain_body(self) -> None:
+        """Safely drain pending request body so socket teardown does not abort connection."""
+        if getattr(self, "_body_read", False):
+            return
+        self._body_read = True
+        try:
+            raw_len = self.headers.get("Content-Length", "0")
+            length = int(raw_len)
+            if 0 < length <= MAX_BODY:
+                self.rfile.read(length)
+        except Exception:
+            pass
+
+    def _send_error(
+        self,
+        status: int,
+        message: str,
+        code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Returns structured JSON error response without leaking stack traces."""
+        self._drain_body()
+        error_name = code or HTTPStatus(status).name.lower()
+        payload: Dict[str, Any] = {
+            "error": message,
+            "status": int(status),
+            "code": error_name,
+        }
+        if details:
+            payload.update(details)
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
 
     def _send_html(self, status: int, html: str) -> None:
         body = html.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+        self.close_connection = True
 
     def do_OPTIONS(self) -> None:
         """Handles CORS preflight requests."""
+        self.req_id = self._get_request_id()
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Content-Length", "0")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if self.req_id:
+            self.send_header("X-Request-ID", self.req_id)
         self._send_cors_headers()
         self.end_headers()
 
     def _authorized(self) -> bool:
-        """Verifies X-API-Key against CLOUDPILOT_API_KEY environment variable if configured."""
+        """Verifies X-API-Key or Authorization header against CLOUDPILOT_API_KEY if configured."""
         configured_key = os.environ.get("CLOUDPILOT_API_KEY")
         if not configured_key:
             return True
-        header_key = self.headers.get("X-API-Key", "")
-        return hmac.compare_digest(header_key, configured_key)
+        return self._has_valid_api_key()
 
     def _read_json_body(self) -> Dict[str, Any]:
+        self._body_read = True
         raw_len = self.headers.get("Content-Length", "0")
         try:
             length = int(raw_len)
@@ -284,71 +484,145 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         t0 = time.perf_counter()
         status = HTTPStatus.OK
+        self.req_id = self._get_request_id()
+        client_ip = self._get_client_ip()
+
         try:
             path = urlparse(self.path).path
+
+            # Production Fail-Closed Gate: Reject non-health endpoints if key is missing in production
+            if is_production() and not os.environ.get("CLOUDPILOT_API_KEY"):
+                if path not in ("/health", "/healthz"):
+                    status = HTTPStatus.SERVICE_UNAVAILABLE
+                    self._send_error(
+                        status,
+                        "Service unavailable: CLOUDPILOT_API_KEY must be configured in production.",
+                        code="production_auth_misconfigured",
+                    )
+                    return
+
+            allowed, retry_after = _check_rate_limit(client_ip, "default")
+            if not allowed:
+                status = HTTPStatus.TOO_MANY_REQUESTS
+                self._send_error(
+                    status,
+                    "Rate limit exceeded. Try again shortly.",
+                    code="too_many_requests",
+                    details={"retry_after_seconds": retry_after},
+                    extra_headers={"Retry-After": str(retry_after)},
+                )
+                return
+
             if path in ("/", "/index.html"):
                 self._send_html(HTTPStatus.OK, DASHBOARD_HTML)
-            elif path == "/healthz":
-                self._send_json(HTTPStatus.OK, {"status": "ok"})
-            elif path == "/api/v1/health":
-                self._send_json(HTTPStatus.OK, self.server.service.get_health())
-            elif path == "/api/v1/cluster":
-                self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
-            elif path == "/api/v1/history":
-                self._send_json(HTTPStatus.OK, store.recent("simulation_runs"))
-            elif path == "/api/v1/store/status":
+            elif path in ("/health", "/healthz"):
+                self._send_json(HTTPStatus.OK, {
+                    "status": "ok",
+                    "service": "CloudPilot Control Plane",
+                    "uptime_sec": round(time.time() - self.server.service._started_at, 2),
+                })
+            elif path in ("/ready", "/api/v1/ready"):
+                is_ready, _, _ = store.check_ready()
+                if is_ready:
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
+                else:
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"status": "not ok"})
+            elif path in PROTECTED_GET_PATHS:
                 if not self._authorized():
                     status = HTTPStatus.UNAUTHORIZED
-                    self._send_json(status, {"error": "Unauthorized."})
+                    self._send_error(status, "Unauthorized. Valid X-API-Key required.", code="unauthorized")
                     return
-                self._send_json(HTTPStatus.OK, store.diagnose())
+                if path == "/api/v1/health":
+                    self._send_json(HTTPStatus.OK, self.server.service.get_health())
+                elif path == "/api/v1/cluster":
+                    self._send_json(HTTPStatus.OK, self.server.service.get_cluster_status())
+                elif path == "/api/v1/history":
+                    self._send_json(HTTPStatus.OK, store.recent("simulation_runs"))
+                elif path == "/api/v1/store/status":
+                    self._send_json(HTTPStatus.OK, store.diagnose())
             else:
                 status = HTTPStatus.NOT_FOUND
-                self._send_json(status, {"error": f"Endpoint '{path}' not found."})
+                self._send_error(status, f"Endpoint '{path}' not found.", code="not_found")
         except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-            self._send_json(status, {"error": "internal"})
+            self._send_error(status, "Internal server error.", code="internal_error")
         finally:
-            self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0)
+            self._log_json("GET", self.path, status, (time.perf_counter() - t0) * 1000.0, self.req_id, client_ip)
 
     def do_POST(self) -> None:
         t0 = time.perf_counter()
         status = HTTPStatus.OK
         acquired_sim = False
+        self.req_id = self._get_request_id()
+        client_ip = self._get_client_ip()
+
         try:
             path = urlparse(self.path).path
 
-            # Only protected state-mutating endpoints require API key auth
+            # Production Fail-Closed Gate: Reject non-health endpoints if key is missing in production
+            if is_production() and not os.environ.get("CLOUDPILOT_API_KEY"):
+                status = HTTPStatus.SERVICE_UNAVAILABLE
+                self._send_error(
+                    status,
+                    "Service unavailable: CLOUDPILOT_API_KEY must be configured in production.",
+                    code="production_auth_misconfigured",
+                )
+                return
+
+            # Category-based rate limiting
+            if path == "/api/v1/simulate":
+                category = "simulate"
+            elif path in ("/api/v1/policy", "/api/v1/reset"):
+                category = "mutation"
+            else:
+                category = "write"
+
+            allowed, retry_after = _check_rate_limit(client_ip, category)
+            if not allowed:
+                status = HTTPStatus.TOO_MANY_REQUESTS
+                if category == "simulate":
+                    msg = "Rate limit exceeded. Max 10 simulations per minute."
+                elif category == "mutation":
+                    msg = "Rate limit exceeded. Max 5 cluster state mutations per minute."
+                else:
+                    msg = "Rate limit exceeded. Try again shortly."
+                self._send_error(
+                    status,
+                    msg,
+                    code="too_many_requests",
+                    details={"retry_after_seconds": retry_after},
+                    extra_headers={"Retry-After": str(retry_after)},
+                )
+                return
+
+            # API key authentication on all write/simulate endpoints
             if path in PROTECTED_POST_PATHS and not self._authorized():
                 status = HTTPStatus.UNAUTHORIZED
-                self._send_json(status, {"error": "Unauthorized."})
+                self._send_error(status, "Unauthorized. Valid X-API-Key required.", code="unauthorized")
                 return
 
             body = self._read_json_body()
 
             if path == "/api/v1/policy":
-                if "policy" not in body:
-                    raise InvalidResourceError("Missing required field 'policy'.")
-                res = self.server.service.set_policy(body["policy"])
+                clean_policy = validate_policy_payload(body)
+                res = self.server.service.set_policy(clean_policy)
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 
             elif path == "/api/v1/allocate":
-                for req_field in ("workload_id", "cpu", "ram"):
-                    if req_field not in body:
-                        raise InvalidResourceError(f"Missing required field '{req_field}'.")
+                alloc_data = validate_allocate_payload(body)
                 res = self.server.service.allocate_workload(
-                    workload_id=body["workload_id"],
-                    cpu=body["cpu"],
-                    ram=body["ram"],
-                    arrival_time=body.get("arrival_time", 0.0),
-                    duration=body.get("duration"),
+                    workload_id=alloc_data["workload_id"],
+                    cpu=alloc_data["cpu"],
+                    ram=alloc_data["ram"],
+                    arrival_time=alloc_data["arrival_time"],
+                    duration=alloc_data["duration"],
                 )
                 alloc_record = {
-                    "workload_id": body.get("workload_id"),
-                    "cpu": body.get("cpu"),
-                    "ram": body.get("ram"),
+                    "workload_id": alloc_data["workload_id"],
+                    "cpu": alloc_data["cpu"],
+                    "ram": alloc_data["ram"],
                     "placed": bool(res.get("placed")),
                     "server_id": res.get("server_id"),
                     "policy": res.get("active_policy"),
@@ -359,9 +633,8 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(status, res)
 
             elif path == "/api/v1/release":
-                if "workload_id" not in body:
-                    raise InvalidResourceError("Missing required field 'workload_id'.")
-                res = self.server.service.release_workload(body["workload_id"])
+                workload_id = validate_release_payload(body)
+                res = self.server.service.release_workload(workload_id)
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 
@@ -371,42 +644,19 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(status, res)
 
             elif path == "/api/v1/simulate":
-                # Per-client IP rate limiter: max 10 requests / 60 seconds
-                client_ip = self.client_address[0] if self.client_address else "127.0.0.1"
-                now = time.time()
-                with _sim_rate_lock:
-                    recent_calls = [
-                        t for t in _sim_rate_history.get(client_ip, [])
-                        if now - t < SIM_RATE_WINDOW
-                    ]
-                    if len(recent_calls) >= SIM_RATE_LIMIT:
-                        _sim_rate_history[client_ip] = recent_calls
-                        status = HTTPStatus.TOO_MANY_REQUESTS
-                        self._send_json(
-                            status,
-                            {"error": "Rate limit exceeded. Max 10 simulations per minute."},
-                        )
-                        return
-                    recent_calls.append(now)
-                    _sim_rate_history[client_ip] = recent_calls
-
-                # Semaphore concurrency control
+                # Concurrency control via semaphore with immediate Retry-After
                 if not SIM_SLOTS.acquire(blocking=False):
                     status = HTTPStatus.TOO_MANY_REQUESTS
-                    self._send_json(
-                        status, {"error": "Simulation queue full. Try again shortly."}
+                    self._send_error(
+                        status,
+                        "Simulation queue full. Try again shortly.",
+                        code="simulation_queue_full",
+                        extra_headers={"Retry-After": "5"},
                     )
                     return
                 acquired_sim = True
-                req_policy = body.get("policy")
-                try:
-                    num_workloads = int(body.get("num_workloads", 200))
-                except (ValueError, TypeError):
-                    num_workloads = 200
-                try:
-                    seed = int(body.get("seed", 42))
-                except (ValueError, TypeError):
-                    seed = 42
+
+                req_policy, num_workloads, seed = validate_simulate_payload(body)
 
                 res = self.server.service.run_simulation(
                     policy=req_policy,
@@ -420,34 +670,53 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     seed=seed,
                     result=res,
                 )
-                store.save("simulation_runs", sim_row)
+
+                # Persist with retry and timeout; if database is down, simulation still succeeds
+                saved = store.save_sync("simulation_runs", sim_row, max_retries=1, timeout=2.0)
+                if saved:
+                    res["store_status"] = "saved"
+                    res["persisted"] = True
+                else:
+                    res["store_status"] = "not saved"
+                    res["persisted"] = False
+
                 status = HTTPStatus.OK
                 self._send_json(status, res)
 
             else:
                 status = HTTPStatus.NOT_FOUND
-                self._send_json(status, {"error": f"Endpoint '{path}' not found."})
+                self._send_error(status, f"Endpoint '{path}' not found.", code="not_found")
 
         except PayloadTooLargeError as exc:
             status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="request_entity_too_large")
         except InvalidResourceError as exc:
             status = HTTPStatus.BAD_REQUEST
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="bad_request")
         except ReleaseError as exc:
             status = HTTPStatus.NOT_FOUND
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="not_found")
+        except SimulationTimeoutError as exc:
+            status = HTTPStatus.GATEWAY_TIMEOUT
+            self._send_error(status, str(exc), code="simulation_timeout")
+        except SimulationLimitError as exc:
+            status = HTTPStatus.BAD_REQUEST
+            self._send_error(status, str(exc), code="simulation_limit_exceeded")
         except AllocationError as exc:
             status = HTTPStatus.CONFLICT
-            self._send_json(status, {"error": str(exc)})
+            self._send_error(status, str(exc), code="conflict")
         except Exception:
             traceback.print_exc(file=sys.stderr)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-            self._send_json(status, {"error": "internal"})
+            self._send_error(status, "Internal server error.", code="internal_error")
         finally:
             if acquired_sim:
-                SIM_SLOTS.release()
-            self._log_json("POST", self.path, status, (time.perf_counter() - t0) * 1000.0)
+                try:
+                    SIM_SLOTS.release()
+                except ValueError:
+                    pass
+            self._log_json("POST", self.path, status, (time.perf_counter() - t0) * 1000.0, self.req_id, client_ip)
+
 
 
 def create_app_server(
@@ -460,6 +729,10 @@ def create_app_server(
 
 
 def main() -> None:
+    if is_production() and not os.environ.get("CLOUDPILOT_API_KEY"):
+        sys.stderr.write("FATAL: CLOUDPILOT_API_KEY must be configured in production (RENDER=true).\n")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="Run CloudPilot Production Control Plane Server.")
     default_port = int(os.environ.get("PORT", 8000))
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")

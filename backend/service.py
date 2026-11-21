@@ -202,6 +202,9 @@ class CloudPilotService:
         policy: Optional[str] = None,
         num_workloads: int = 200,
         seed: int = 42,
+        max_steps: Optional[int] = 50_000,
+        max_duration_sec: Optional[float] = 86_400.0,
+        wall_clock_timeout_sec: Optional[float] = 10.0,
     ) -> Dict[str, Any]:
         with self._lock:
             if not isinstance(policy, (str, type(None))):
@@ -211,8 +214,8 @@ class CloudPilotService:
                 raise InvalidResourceError(
                     f"Unsupported policy '{chosen_policy}'. Available: {self.available_policies}"
                 )
-            if isinstance(num_workloads, bool) or not isinstance(num_workloads, int) or not (1 <= num_workloads <= 2000):
-                raise InvalidResourceError("num_workloads must be an integer between 1 and 2000.")
+            if isinstance(num_workloads, bool) or not isinstance(num_workloads, int) or not (1 <= num_workloads <= 1000):
+                raise InvalidResourceError("num_workloads must be an integer between 1 and 1000.")
             if isinstance(seed, bool) or not isinstance(seed, (int, float)):
                 raise InvalidResourceError("seed must be an integer.")
 
@@ -237,7 +240,13 @@ class CloudPilotService:
 
         # Run simulation OUTSIDE service._lock to prevent blocking live API requests
         simulator = TraceSimulator(cluster=sim_cluster, allocator=alloc)
-        result = simulator.run(trace, reset_cluster=True)
+        result = simulator.run(
+            trace,
+            reset_cluster=True,
+            max_steps=max_steps,
+            max_duration_sec=max_duration_sec,
+            wall_clock_timeout_sec=wall_clock_timeout_sec,
+        )
         data = asdict(result)
         data["policy_key"] = chosen_policy
         data["sla_efficiency_score"] = compute_sla_efficiency_score(result)

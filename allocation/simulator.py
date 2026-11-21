@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import heapq
+import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from allocation.cluster import Cluster
+from allocation.exceptions import SimulationLimitError, SimulationTimeoutError
 from allocation.heuristics import Allocator
 from allocation.resource import CloudServer
 from allocation.workload import Workload
@@ -50,16 +52,27 @@ class TraceSimulator:
         self.cluster = cluster
         self.allocator = allocator
 
-    def run(self, workloads: Iterable[Workload], reset_cluster: bool = True) -> SimulationResult:
+    def run(
+        self,
+        workloads: Iterable[Workload],
+        reset_cluster: bool = True,
+        max_steps: Optional[int] = 50_000,
+        max_duration_sec: Optional[float] = 86_400.0,
+        wall_clock_timeout_sec: Optional[float] = 10.0,
+    ) -> SimulationResult:
         """Run the discrete-event simulation across the given workload stream.
 
         Args:
             workloads: Iterable sequence of Workload objects to simulate.
             reset_cluster: Whether to reset the cluster to an idle state before starting.
+            max_steps: Maximum number of simulation event loop steps before raising SimulationLimitError.
+            max_duration_sec: Maximum virtual simulation duration in seconds before raising SimulationLimitError.
+            wall_clock_timeout_sec: Maximum real-world wall clock execution time before raising SimulationTimeoutError.
 
         Returns:
             SimulationResult containing comprehensive utilization, SLA, and capacity metrics.
         """
+        t_wall_start = time.perf_counter()
         if reset_cluster:
             self.cluster.reset()
             if hasattr(self.allocator, "reset_state"):
@@ -105,9 +118,24 @@ class TraceSimulator:
         peak_ram_util = 0.0
         peak_servers = 0
         tie_counter = len(workload_list)
+        steps = 0
 
         while event_queue:
+            steps += 1
+            if max_steps is not None and steps > max_steps:
+                raise SimulationLimitError(
+                    f"Simulation exceeded step limit of {max_steps} events."
+                )
+            if wall_clock_timeout_sec is not None and (time.perf_counter() - t_wall_start) > wall_clock_timeout_sec:
+                raise SimulationTimeoutError(
+                    f"Simulation exceeded wall-clock timeout of {wall_clock_timeout_sec}s."
+                )
+
             current_time, event_type, _, workload = heapq.heappop(event_queue)
+            if max_duration_sec is not None and (current_time - start_time) > max_duration_sec:
+                raise SimulationLimitError(
+                    f"Simulation exceeded maximum virtual duration of {max_duration_sec}s."
+                )
             dt = current_time - last_time
 
             if dt > 0.0:

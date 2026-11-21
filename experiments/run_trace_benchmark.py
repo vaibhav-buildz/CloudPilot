@@ -8,7 +8,7 @@ import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 # Ensure project root is on sys.path when executed directly as a script
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

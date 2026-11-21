@@ -14,6 +14,8 @@ from allocation.exceptions import (
     InsufficientRAMError,
     InvalidResourceError,
     ReleaseError,
+    SimulationLimitError,
+    SimulationTimeoutError,
 )
 from allocation.heuristics import (
     Allocator,
@@ -48,4 +50,6 @@ __all__ = [
     "InsufficientCPUError",
     "InsufficientRAMError",
     "ReleaseError",
+    "SimulationTimeoutError",
+    "SimulationLimitError",
 ]

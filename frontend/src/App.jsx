@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 
-const API_BASE = (import.meta.env.VITE_API_URL !== undefined
+const API_BASE = (import.meta.env.VITE_API_URL !== undefined && import.meta.env.VITE_API_URL !== ''
   ? import.meta.env.VITE_API_URL
-  : 'http://127.0.0.1:8000').replace(/\/$/, '');
+  : (typeof window !== 'undefined' && window.location.origin ? '/api/backend' : 'http://127.0.0.1:8000')
+).replace(/\/$/, '');
 
 const POLICIES = [
   { key: 'predictive_ar', label: 'Predictive (LinearAR ML)', short: 'LinearAR', color: '#38bdf8' },
@@ -15,15 +16,19 @@ const POLICIES = [
   { key: 'round_robin', label: 'RoundRobin', short: 'RoundRobin', color: '#475569' },
 ];
 
+const MAX_WAKE_RETRIES = 20; // 20 attempts @ 3s = 60s max cold-start grace period
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('cluster');
   const [backendStatus, setBackendStatus] = useState('checking'); // 'healthy' | 'waking' | 'down'
   const [healthData, setHealthData] = useState(null);
+  const [wakeAttempts, setWakeAttempts] = useState(0);
 
   // Cluster View State
   const [clusterData, setClusterData] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [clusterLoading, setClusterLoading] = useState(false);
+  const [clusterError, setClusterError] = useState(null);
 
   // Simulation Runner State
   const [simPolicy, setSimPolicy] = useState('predictive_ar');
@@ -39,23 +44,20 @@ export default function App() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareProgress, setCompareProgress] = useState('');
   const [compareResults, setCompareResults] = useState([]);
+  const [compareError, setCompareError] = useState(null);
   const [chartMetric, setChartMetric] = useState('placed_count');
 
   // History State
   const [historyRuns, setHistoryRuns] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
 
-  // Admin State (In-memory API key only)
-  const [apiKey, setApiKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
+  // Admin State (Serverless proxy attaches authentication automatically)
   const [adminPolicy, setAdminPolicy] = useState('predictive_ar');
-  const [allocId, setAllocId] = useState('');
-  const [allocCpu, setAllocCpu] = useState(2.0);
-  const [allocRam, setAllocRam] = useState(4.0);
-  const [releaseId, setReleaseId] = useState('');
   const [adminFeedback, setAdminFeedback] = useState(null);
+  const [adminLoading, setAdminLoading] = useState(false);
 
-  // Fetch Health
+  // Fetch Health (cold-start resilience)
   const checkHealth = useCallback(async () => {
     let timer;
     try {
@@ -68,33 +70,67 @@ export default function App() {
         const data = await res.json();
         setHealthData(data);
         setBackendStatus('healthy');
+        setWakeAttempts(0);
       } else {
-        setBackendStatus('down');
+        // Treat proxy 502/503/504 as backend waking up (cold start) and keep polling until retry limit
+        if ([502, 503, 504].includes(res.status)) {
+          setWakeAttempts((prev) => {
+            const next = prev + 1;
+            if (next >= MAX_WAKE_RETRIES) {
+              setBackendStatus('down');
+            } else {
+              setBackendStatus('waking');
+            }
+            return next;
+          });
+        } else {
+          setBackendStatus('down');
+          setWakeAttempts((prev) => prev + 1);
+        }
       }
     } catch {
       clearTimeout(timer);
-      setBackendStatus('waking');
+      setWakeAttempts((prev) => {
+        const next = prev + 1;
+        if (next >= MAX_WAKE_RETRIES) {
+          setBackendStatus('down');
+        } else {
+          setBackendStatus('waking');
+        }
+        return next;
+      });
     }
   }, []);
 
+  // Poll /health aggressively (every 3s) during wake-up, or every 30s when healthy
   useEffect(() => {
     checkHealth();
-    const interval = setInterval(checkHealth, 30000);
-    return () => clearInterval(interval);
   }, [checkHealth]);
+
+  useEffect(() => {
+    const delay = backendStatus === 'healthy' ? 30000 : 3000;
+    const interval = setInterval(() => {
+      checkHealth();
+    }, delay);
+    return () => clearInterval(interval);
+  }, [backendStatus, checkHealth]);
 
   // Fetch Cluster Telemetry
   const fetchCluster = useCallback(async () => {
+    setClusterLoading(true);
+    setClusterError(null);
     try {
-      setClusterLoading(true);
       const res = await fetch(`${API_BASE}/api/v1/cluster`);
       if (res.ok) {
         const data = await res.json();
         setClusterData(data);
         setBackendStatus('healthy');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setClusterError(errData.error || `HTTP ${res.status}: Failed to load cluster telemetry`);
       }
-    } catch {
-      // Handled by health status
+    } catch (err) {
+      setClusterError(err.message || 'Network error fetching cluster telemetry');
     } finally {
       setClusterLoading(false);
     }
@@ -120,13 +156,15 @@ export default function App() {
     setSimLoading(true);
     setSimError(null);
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      const count = Math.min(Math.max(parseInt(simWorkloads, 10) || 1, 1), 1000);
       const res = await fetch(`${API_BASE}/api/v1/simulate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           policy: simPolicy,
-          num_workloads: parseInt(simWorkloads, 10),
-          seed: parseInt(simSeed, 10),
+          num_workloads: count,
+          seed: parseInt(simSeed, 10) || 42,
         }),
       });
       const data = await res.json();
@@ -144,29 +182,35 @@ export default function App() {
   // Run Multi-Policy Comparison Benchmark
   const handleRunComparison = async () => {
     setCompareLoading(true);
+    setCompareError(null);
     setCompareResults([]);
     const results = [];
     try {
+      const count = Math.min(Math.max(parseInt(compareWorkloads, 10) || 1, 1), 1000);
       for (let i = 0; i < POLICIES.length; i++) {
         const pol = POLICIES[i];
         setCompareProgress(`Evaluating ${pol.label} (${i + 1}/${POLICIES.length})...`);
+        const headers = { 'Content-Type': 'application/json' };
         const res = await fetch(`${API_BASE}/api/v1/simulate`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
             policy: pol.key,
-            num_workloads: parseInt(compareWorkloads, 10),
-            seed: parseInt(compareSeed, 10),
+            num_workloads: count,
+            seed: parseInt(compareSeed, 10) || 42,
           }),
         });
         if (res.ok) {
           const run = await res.json();
           results.push(run);
           setCompareResults([...results]);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(`Failed on ${pol.label}: ${errData.error || res.statusText}`);
         }
       }
-    } catch {
-      // Handled by finally
+    } catch (err) {
+      setCompareError(err.message);
     } finally {
       setCompareLoading(false);
       setCompareProgress('');
@@ -176,13 +220,18 @@ export default function App() {
   // Fetch History from Supabase
   const fetchHistory = useCallback(async () => {
     setHistoryLoading(true);
+    setHistoryError(null);
     try {
       const res = await fetch(`${API_BASE}/api/v1/history`);
       if (res.ok) {
         const data = await res.json();
         setHistoryRuns(Array.isArray(data) ? data : []);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setHistoryError(errData.error || `HTTP ${res.status}: Failed to retrieve history`);
       }
-    } catch {
+    } catch (err) {
+      setHistoryError(err.message || 'Network error fetching run history');
       setHistoryRuns([]);
     } finally {
       setHistoryLoading(false);
@@ -198,9 +247,9 @@ export default function App() {
   // Admin Actions
   const handleAdminPolicySwitch = async () => {
     setAdminFeedback(null);
+    setAdminLoading(true);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
       const res = await fetch(`${API_BASE}/api/v1/policy`, {
         method: 'POST',
         headers,
@@ -215,73 +264,17 @@ export default function App() {
       }
     } catch (err) {
       setAdminFeedback({ type: 'error', msg: err.message });
-    }
-  };
-
-  const handleAdminAllocate = async (e) => {
-    if (e) e.preventDefault();
-    setAdminFeedback(null);
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
-      const res = await fetch(`${API_BASE}/api/v1/allocate`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          workload_id: allocId.trim(),
-          cpu: parseFloat(allocCpu),
-          ram: parseFloat(allocRam),
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setAdminFeedback({
-          type: 'success',
-          msg: `Allocated ${data.workload_id} -> ${data.server_id} (Policy: ${data.active_policy})`,
-        });
-        setAllocId('');
-        fetchCluster();
-      } else {
-        setAdminFeedback({ type: 'error', msg: `[${res.status}] ${data.error || 'Allocation rejected'}` });
-      }
-    } catch (err) {
-      setAdminFeedback({ type: 'error', msg: err.message });
-    }
-  };
-
-  const handleAdminRelease = async (e) => {
-    if (e) e.preventDefault();
-    setAdminFeedback(null);
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
-      const res = await fetch(`${API_BASE}/api/v1/release`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ workload_id: releaseId.trim() }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setAdminFeedback({
-          type: 'success',
-          msg: `Released workload ${data.workload_id} from ${data.server_id}`,
-        });
-        setReleaseId('');
-        fetchCluster();
-      } else {
-        setAdminFeedback({ type: 'error', msg: `[${res.status}] ${data.error || 'Release failed'}` });
-      }
-    } catch (err) {
-      setAdminFeedback({ type: 'error', msg: err.message });
+    } finally {
+      setAdminLoading(false);
     }
   };
 
   const handleAdminReset = async () => {
     if (!window.confirm('Are you sure you want to reset the cluster? All allocations will be cleared.')) return;
     setAdminFeedback(null);
+    setAdminLoading(true);
     try {
       const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['X-API-Key'] = apiKey;
       const res = await fetch(`${API_BASE}/api/v1/reset`, { method: 'POST', headers });
       const data = await res.json();
       if (res.ok) {
@@ -292,6 +285,8 @@ export default function App() {
       }
     } catch (err) {
       setAdminFeedback({ type: 'error', msg: err.message });
+    } finally {
+      setAdminLoading(false);
     }
   };
 
@@ -350,9 +345,15 @@ export default function App() {
       {backendStatus === 'waking' && (
         <div className="wakeup-alert">
           <span>⚡</span>
-          <span>
-            <strong>Waking up backend service on free tier</strong> (e.g. Render spin-up may take up to 60 seconds). Requests will automatically resolve once active.
-          </span>
+          <div style={{ flex: 1 }}>
+            <strong>Backend is waking up (Render free tier cold start may take 30–60s)</strong>
+            <div style={{ fontSize: '12px', marginTop: '2px', opacity: 0.9 }}>
+              Retrying /health (Attempt #{wakeAttempts})... Requests will resume automatically once online.
+            </div>
+          </div>
+          <button className="retry-btn" onClick={() => checkHealth(true)}>
+            Retry Now
+          </button>
         </div>
       )}
 
@@ -394,6 +395,29 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {clusterLoading && !clusterData && (
+            <div className="loading-box">
+              <div className="spinner"></div>
+              <span>Connecting to cluster telemetry...</span>
+            </div>
+          )}
+
+          {clusterError && !clusterData && (
+            <div className="feedback-banner error">
+              <span>{clusterError}</span>
+              <button className="retry-btn" onClick={fetchCluster}>Retry</button>
+            </div>
+          )}
+
+          {!clusterData && !clusterLoading && !clusterError && (
+            <div className="empty-state">
+              <div className="empty-state-icon">📡</div>
+              <div className="empty-state-title">No Cluster Telemetry Available</div>
+              <div className="empty-state-desc">The cluster state could not be loaded. Please ensure the backend is running and reachable.</div>
+              <button onClick={fetchCluster}>Connect to Cluster</button>
+            </div>
+          )}
 
           {clusterData && (
             <>
@@ -490,11 +514,11 @@ export default function App() {
               </select>
             </div>
             <div className="control-group">
-              <label>Workloads Count</label>
+              <label>Workloads Count (Max 1000)</label>
               <input
                 type="number"
-                min="10"
-                max="2000"
+                min="1"
+                max="1000"
                 value={simWorkloads}
                 onChange={(e) => setSimWorkloads(e.target.value)}
               />
@@ -514,8 +538,40 @@ export default function App() {
 
           {simError && <div className="feedback-banner error">{simError}</div>}
 
+          {simLoading && (
+            <div className="loading-box">
+              <div className="spinner"></div>
+              <span>Executing trace simulation against policy {simPolicy}...</span>
+            </div>
+          )}
+
+          {!simResult && !simLoading && !simError && (
+            <div className="empty-state">
+              <div className="empty-state-icon">⚡</div>
+              <div className="empty-state-title">No Simulation Executed Yet</div>
+              <div className="empty-state-desc">
+                Select an allocation algorithm, configure workload size (up to 1,000 workloads to protect free-tier instances), and click <strong>Run Simulation</strong> to compute placement efficiency.
+              </div>
+            </div>
+          )}
+
           {simResult && (
             <div>
+              {(simResult.store_status === 'not saved' || simResult.persisted === false) && (
+                <div
+                  className="feedback-banner warning"
+                  style={{
+                    background: 'rgba(245, 158, 11, 0.15)',
+                    border: '1px solid rgba(245, 158, 11, 0.4)',
+                    color: '#fef08a',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <span>
+                    ⚠️ Simulation computed successfully, but results were <strong>not saved</strong> to persistent database (storage offline or unreachable).
+                  </span>
+                </div>
+              )}
               <div className="metrics-grid">
                 <div className="metric-card">
                   <span className="metric-label">Placed Workloads</span>
@@ -567,10 +623,10 @@ export default function App() {
 
           <div className="controls-row" style={{ marginBottom: '20px' }}>
             <div className="control-group">
-              <label>Workloads Count</label>
+              <label>Workloads Count (Max 1000)</label>
               <input
                 type="number"
-                min="20"
+                min="1"
                 max="1000"
                 value={compareWorkloads}
                 onChange={(e) => setCompareWorkloads(e.target.value)}
@@ -588,6 +644,25 @@ export default function App() {
               {compareLoading ? compareProgress || 'Benchmarking...' : '📊 Run Comparative Benchmark'}
             </button>
           </div>
+
+          {compareError && <div className="feedback-banner error">{compareError}</div>}
+
+          {compareLoading && (
+            <div className="loading-box">
+              <div className="spinner"></div>
+              <span>{compareProgress || 'Evaluating benchmark suites across all 7 policies...'}</span>
+            </div>
+          )}
+
+          {compareResults.length === 0 && !compareLoading && !compareError && (
+            <div className="empty-state">
+              <div className="empty-state-icon">📈</div>
+              <div className="empty-state-title">No Benchmark Evaluated Yet</div>
+              <div className="empty-state-desc">
+                Click <strong>Run Comparative Benchmark</strong> to simulate all 7 heuristic and ML policies side-by-side on identical workloads and view visual comparisons.
+              </div>
+            </div>
+          )}
 
           {compareResults.length > 0 && (
             <div>
@@ -730,14 +805,31 @@ export default function App() {
             </button>
           </div>
 
-          {historyRuns.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-              <p style={{ fontSize: '15px', marginBottom: '8px' }}>No simulation runs recorded yet.</p>
-              <p style={{ fontSize: '12px', maxWidth: '500px', margin: '0 auto' }}>
-                Runs will appear here automatically when executed on the backend if <code>SUPABASE_URL</code> and <code>SUPABASE_SERVICE_KEY</code> are configured.
-              </p>
+          {historyError && (
+            <div className="feedback-banner error">
+              <span>{historyError}</span>
+              <button className="retry-btn" onClick={fetchHistory}>Retry</button>
             </div>
-          ) : (
+          )}
+
+          {historyLoading && historyRuns.length === 0 && (
+            <div className="loading-box">
+              <div className="spinner"></div>
+              <span>Fetching simulation runs from Supabase...</span>
+            </div>
+          )}
+
+          {historyRuns.length === 0 && !historyLoading && !historyError && (
+            <div className="empty-state">
+              <div className="empty-state-icon">📜</div>
+              <div className="empty-state-title">No Simulation Runs Recorded Yet</div>
+              <div className="empty-state-desc">
+                Runs will appear here automatically when executed on the backend if <code>SUPABASE_URL</code> and <code>SUPABASE_SERVICE_KEY</code> are configured.
+              </div>
+            </div>
+          )}
+
+          {historyRuns.length > 0 && (
             <div className="table-container">
               <table>
                 <thead>
@@ -787,26 +879,10 @@ export default function App() {
       {/* TAB 5: ADMIN PANEL */}
       {activeTab === 'admin' && (
         <div className="panel">
-          <h2 className="panel-title">Authenticated Control-Plane Actions</h2>
+          <h2 className="panel-title">Cluster Control Actions</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '6px 0 16px 0' }}>
-            Execute protected state-mutating cluster operations. API key is stored strictly in component memory and forwarded as <code>X-API-Key</code>.
+            Operational cluster management. Authenticated securely via Vercel serverless proxy with server-side API key.
           </p>
-
-          <div className="control-group" style={{ maxWidth: '420px', marginBottom: '24px' }}>
-            <label>API Key (Stored in React state only)</label>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input
-                type={showKey ? 'text' : 'password'}
-                placeholder="Enter CLOUDPILOT_API_KEY if configured..."
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                style={{ flex: 1 }}
-              />
-              <button type="button" className="secondary" onClick={() => setShowKey(!showKey)}>
-                {showKey ? 'Hide' : 'Show'}
-              </button>
-            </div>
-          </div>
 
           {adminFeedback && (
             <div className={`feedback-banner ${adminFeedback.type}`}>
@@ -826,6 +902,9 @@ export default function App() {
             {/* Policy Switch */}
             <div className="form-box">
               <h4>Switch Active Policy</h4>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                Change the active allocation strategy evaluated across the live cluster.
+              </p>
               <div className="control-group">
                 <label>Target Policy</label>
                 <select value={adminPolicy} onChange={(e) => setAdminPolicy(e.target.value)}>
@@ -836,75 +915,19 @@ export default function App() {
                   ))}
                 </select>
               </div>
-              <button onClick={handleAdminPolicySwitch}>Apply Policy</button>
-            </div>
-
-            {/* Allocate Workload */}
-            <div className="form-box">
-              <h4>Direct Workload Allocation</h4>
-              <form onSubmit={handleAdminAllocate} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div className="control-group">
-                  <label>Workload ID</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. job-web-01"
-                    required
-                    value={allocId}
-                    onChange={(e) => setAllocId(e.target.value)}
-                  />
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div className="control-group">
-                    <label>CPU Cores</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      value={allocCpu}
-                      onChange={(e) => setAllocCpu(e.target.value)}
-                    />
-                  </div>
-                  <div className="control-group">
-                    <label>RAM (GB)</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      value={allocRam}
-                      onChange={(e) => setAllocRam(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <button type="submit">Allocate Workload</button>
-              </form>
-            </div>
-
-            {/* Release Workload */}
-            <div className="form-box">
-              <h4>Direct Workload Release</h4>
-              <form onSubmit={handleAdminRelease} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div className="control-group">
-                  <label>Workload ID to Evict</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. job-web-01"
-                    required
-                    value={releaseId}
-                    onChange={(e) => setReleaseId(e.target.value)}
-                  />
-                </div>
-                <button type="submit" className="secondary">Release Workload</button>
-              </form>
+              <button onClick={handleAdminPolicySwitch} disabled={adminLoading}>
+                {adminLoading ? 'Applying...' : 'Apply Policy'}
+              </button>
             </div>
 
             {/* Cluster Reset */}
             <div className="form-box">
               <h4 style={{ color: 'var(--accent-rose)' }}>Cluster Eviction & Reset</h4>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                Evict all resident workloads and reset server utilization counters to zero.
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                Evict all resident workloads and reset server utilization counters back to zero.
               </p>
-              <button className="danger" onClick={handleAdminReset} style={{ marginTop: 'auto' }}>
-                ⚠️ Reset Entire Cluster
+              <button className="danger" onClick={handleAdminReset} disabled={adminLoading} style={{ marginTop: 'auto' }}>
+                {adminLoading ? 'Resetting...' : '⚠️ Reset Entire Cluster'}
               </button>
             </div>
           </div>

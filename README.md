@@ -26,7 +26,35 @@ Cloud resource management requires allocating heterogeneous compute workloads (d
 
 ---
 
-## 2. Architecture & Design Decisions
+## 2. Architecture & System Design
+
+```
++-------------------------------------------------------------------------+
+|                              USER BROWSER                               |
+|                  https://cloud-pilot-gamma.vercel.app                   |
++-------------------------------------------------------------------------+
+                                    |
+                                    | HTTPS / REST (CORS-restricted)
+                                    v
++-------------------------------------------------------------------------+
+|                       RENDER PYTHON CONTROL PLANE                       |
+|                   https://cloudpilot-2whk.onrender.com                  |
+|                                                                         |
+|  - Zero-dependency ThreadingHTTPServer (Python standard library)        |
+|  - Security: Rate limiting per IP, API key auth, bounded inputs (Pydantic)|
+|  - Reliability: Semaphore-guarded simulation worker pool (max 2 jobs)   |
+|  - Health checks: /health (liveness) & /ready (Supabase readiness ping) |
+|  - Allocation Engines: FirstFit, BestFit, WorstFit, RoundRobin,         |
+|                        LinearAR ML Forecaster, UCB Contextual Bandit    |
++-------------------------------------------------------------------------+
+                                    |
+                                    | HTTPS REST with retry & backoff
+                                    v
++-------------------------------------------------------------------------+
+|                          SUPABASE POSTGRESQL                            |
+|             Persistence for simulation_runs & history telemetries       |
++-------------------------------------------------------------------------+
+```
 
 ### Directory Structure
 
@@ -318,16 +346,91 @@ docker logs cloudpilot-server
 
 ---
 
-## 7. Multi-Platform Free Cloud Deployment (Step 8)
+## 7. Cloud Deployment Walkthrough
 
-CloudPilot is production-hardened with rate-limiting, security headers (`X-Content-Type-Options: nosniff`), concurrency gates, API key authentication (`CLOUDPILOT_API_KEY`), and pre-configured deployment targets. See [docs/DEPLOY.md](docs/DEPLOY.md) for full walkthroughs:
-- **Render**: Blueprint-driven web deployment via `render.yaml`.
-- **Hugging Face Spaces**: Interactive containerized demo via Docker SDK and `app_port: 8000`.
-- **Google Cloud Run**: Serverless container execution with auto-scaling down to zero (`gcloud run deploy --source .`).
+CloudPilot is configured for zero-cost multi-cloud production deployment across Render, Vercel, and Supabase.
+
+### 1. Database Setup (Supabase)
+1. Create a free project at [supabase.com](https://supabase.com).
+2. In the SQL Editor, execute the schema migration to create the simulation store table:
+```sql
+CREATE TABLE IF NOT EXISTS simulation_runs (
+    id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    policy TEXT NOT NULL,
+    num_workloads INT NOT NULL,
+    seed INT NOT NULL,
+    placed_count INT NOT NULL,
+    total_workloads INT NOT NULL,
+    rejection_rate_pct DOUBLE PRECISION NOT NULL,
+    sla_efficiency_score DOUBLE PRECISION NOT NULL,
+    avg_cpu_utilization_pct DOUBLE PRECISION NOT NULL,
+    avg_ram_utilization_pct DOUBLE PRECISION NOT NULL,
+    peak_cpu_utilization_pct DOUBLE PRECISION NOT NULL,
+    peak_ram_utilization_pct DOUBLE PRECISION NOT NULL,
+    allocated_cpu_hours DOUBLE PRECISION NOT NULL,
+    simulation_duration_sec DOUBLE PRECISION NOT NULL,
+    result JSONB
+);
+```
+3. Copy the Project URL and Service Role Key (from Settings > API) for use in backend configuration.
+
+### 2. Backend Deployment (Render)
+1. Connect your GitHub repository to [Render](https://render.com).
+2. Create a new **Web Service**:
+   - **Environment**: Python (or Docker using the root `Dockerfile`).
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python -m backend.server`
+   - **Plan**: Free tier.
+3. Configure Environment Variables in the Render Dashboard (see names below).
+4. Verify deployment: visit `https://<your-service>.onrender.com/health` and `/ready`.
+
+### 3. Frontend Deployment (Vercel)
+1. Import the repository in [Vercel](https://vercel.com).
+2. Set **Root Directory** to `frontend`.
+3. Framework preset will automatically detect **Vite**.
+4. Configure Serverless Environment Variables in Vercel:
+   - `RENDER_BACKEND_URL`: URL of the Render backend service (e.g. `https://cloudpilot-2whk.onrender.com`).
+   - `CLOUDPILOT_API_KEY`: Secret shared API key. The serverless proxy (`frontend/api/proxy.js`) automatically attaches `X-API-Key` to backend requests on the server-side, preventing client-side key leakage.
+   - `VITE_API_URL`: **Must be left UNSET** in production so client requests route through the secure same-origin `/api/backend` proxy.
+5. Deploy. The Single Page App will build and deploy to your custom `.vercel.app` domain, communicating with the backend via the same-origin `/api/backend` proxy.
 
 ---
 
-## 8. How to Execute Tests
+## 8. Environment Variables (Names Only)
+
+All secrets and host configurations are read from environment variables; none are hardcoded:
+
+| Variable Name | Component | Description | Default / Example | Secret? |
+| :--- | :--- | :--- | :--- | :--- |
+| `PORT` | Backend (Render) | HTTP server listening port | `8000` | No |
+| `ENVIRONMENT` | Backend (Render) | Runtime environment mode (`production` enforces fail-closed auth) | `development` | No |
+| `RENDER` | Backend (Render) | Flag indicating Render hosting (enforces fail-closed auth) | Unset | No |
+| `ALLOWED_ORIGIN` | Backend (Render) | Single allowed CORS origin (no wildcard in prod) | `https://cloud-pilot-gamma.vercel.app` | No |
+| `CLOUDPILOT_API_KEY` | Backend (Render) & Vercel Proxy | Shared API key for all data & execution endpoints | None (required in prod) | **Yes** |
+| `SUPABASE_URL` | Backend (Render) | Supabase project REST API URL | None (persistence disabled if unset) | No |
+| `SUPABASE_SERVICE_KEY` | Backend (Render) | Supabase service-role secret key | None (persistence disabled if unset) | **Yes** |
+| `RENDER_BACKEND_URL` | Frontend (Vercel) | Backend target for serverless proxy | None | No |
+| `VITE_API_URL` | Frontend (Vite) | Client API base (MUST be unset in production to use proxy) | `/api/backend` | No |
+
+---
+
+## 9. Known Limitations & Edge Cases
+
+1. **Render Free-Tier Cold Starts**:
+   - Free instances spin down after 15 minutes of inactivity. The initial wake-up HTTP request incurs a ~30–60s cold-start latency while the container boots.
+   - *Mitigation*: The frontend includes an active polling loop against `/health` with a live retry counter and visual status notification so users are aware of the boot phase.
+2. **Trace-Sample Distribution Bias**:
+   - The trace workload sample is derived from a subset of the Alibaba Cluster Trace v2018. It predominantly reflects large-scale batch computation and containerized microservices. Schedulers optimized for this trace may show different characteristics on specialized workloads (such as ultra-short serverless functions or heavy GPU-bound training jobs).
+3. **Execution Resource Boundaries & Concurrency**:
+   - To prevent long simulation requests from exhausting CPU or memory on Render free tier (512 MB RAM), workload counts are bounded to $N \le 1000$ per simulation request.
+   - Simulation requests are gated by an internal thread semaphore limiting concurrency to 2 simultaneous runs; excess requests receive immediate `503 Service Unavailable` with structured retry guidance.
+4. **Database Resilience**:
+   - If Supabase is unreachable or encounters network timeouts, simulation runs still complete successfully and return results with `"store_status": "not saved"`.
+
+---
+
+## 10. How to Execute Tests
 
 The test suite runs using either Python's built-in `unittest` runner or `pytest`.
 
@@ -343,7 +446,7 @@ python -m pytest -v
 
 ---
 
-## 9. Roadmap
+## 11. Roadmap
 
 - [x] Multi-server placement heuristics (First-Fit, Best-Fit, Worst-Fit, Round-Robin).
 - [x] Synthetic workload generation and baseline benchmarks.
