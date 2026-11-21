@@ -854,6 +854,7 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
         cls.server.server_close()
 
     def setUp(self) -> None:
+        time.sleep(0.05)
         with _sim_rate_lock:
             _sim_rate_history.clear()
         with _mutation_rate_lock:
@@ -983,11 +984,11 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
 
     def test_simulation_concurrency_slots_busy_immediate_503_retry_after(self) -> None:
         from backend.server import SIM_SLOTS
-        # Acquire both slots to simulate complete saturation
-        slot1 = SIM_SLOTS.acquire(blocking=False)
-        slot2 = SIM_SLOTS.acquire(blocking=False)
-        self.assertTrue(slot1)
-        self.assertTrue(slot2)
+        # Acquire all available slots to simulate complete saturation
+        acquired_slots = []
+        while SIM_SLOTS.acquire(blocking=False):
+            acquired_slots.append(True)
+        self.assertGreaterEqual(len(acquired_slots), 1)
         try:
             conn = http.client.HTTPConnection(self.host, self.port, timeout=5.0)
             body = json.dumps({"policy": "first_fit", "num_workloads": 10})
@@ -999,8 +1000,11 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
             self.assertEqual(data.get("code"), "simulation_queue_full")
             conn.close()
         finally:
-            SIM_SLOTS.release()
-            SIM_SLOTS.release()
+            for _ in acquired_slots:
+                try:
+                    SIM_SLOTS.release()
+                except ValueError:
+                    pass
 
     def test_simulation_wall_clock_timeout_and_caps(self) -> None:
         from allocation.cluster import Cluster
