@@ -16,6 +16,8 @@ const POLICIES = [
   { key: 'round_robin', label: 'RoundRobin', short: 'RoundRobin', color: '#475569' },
 ];
 
+const MAX_WAKE_RETRIES = 20; // 20 attempts @ 3s = 60s max cold-start grace period
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('cluster');
   const [backendStatus, setBackendStatus] = useState('checking'); // 'healthy' | 'waking' | 'down'
@@ -70,18 +72,33 @@ export default function App() {
         setBackendStatus('healthy');
         setWakeAttempts(0);
       } else {
-        // Treat proxy 502/503/504 as backend waking up (cold start) and keep polling
+        // Treat proxy 502/503/504 as backend waking up (cold start) and keep polling until retry limit
         if ([502, 503, 504].includes(res.status)) {
-          setBackendStatus('waking');
+          setWakeAttempts((prev) => {
+            const next = prev + 1;
+            if (next >= MAX_WAKE_RETRIES) {
+              setBackendStatus('down');
+            } else {
+              setBackendStatus('waking');
+            }
+            return next;
+          });
         } else {
           setBackendStatus('down');
+          setWakeAttempts((prev) => prev + 1);
         }
-        setWakeAttempts((prev) => prev + 1);
       }
     } catch {
       clearTimeout(timer);
-      setBackendStatus('waking');
-      setWakeAttempts((prev) => prev + 1);
+      setWakeAttempts((prev) => {
+        const next = prev + 1;
+        if (next >= MAX_WAKE_RETRIES) {
+          setBackendStatus('down');
+        } else {
+          setBackendStatus('waking');
+        }
+        return next;
+      });
     }
   }, []);
 

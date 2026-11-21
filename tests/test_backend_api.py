@@ -1296,11 +1296,21 @@ class TestProductionReliabilityAndSecurity(unittest.TestCase):
             self.assertEqual(st_reset, 200, f"Reset request failed with status {st_reset}: {data_reset}")
             self.assertTrue(data_reset.get("reset"))
 
-            # 6th mutation request must fail with 429
-            st6, data6 = self._request("POST", "/api/v1/policy", {"policy": "first_fit"}, headers=headers)
-            self.assertEqual(st6, 429)
+            # 6th mutation request must fail with 429 and return Retry-After header
+            conn = http.client.HTTPConnection(self.host, self.port)
+            body_json = json.dumps({"policy": "first_fit"})
+            conn.request("POST", "/api/v1/policy", body=body_json, headers=headers)
+            resp6 = conn.getresponse()
+            self.assertEqual(resp6.status, 429)
+            retry_after_hdr = resp6.getheader("Retry-After")
+            self.assertIsNotNone(retry_after_hdr)
+            self.assertGreater(int(retry_after_hdr), 0)
+            data6 = json.loads(resp6.read().decode("utf-8"))
+            conn.close()
+
             self.assertEqual(data6.get("code"), "too_many_requests")
             self.assertIn("Max 5 cluster state mutations per minute", data6.get("error", ""))
+            self.assertGreater(data6.get("retry_after_seconds", 0), 0)
 
             # Different client IP is not blocked
             headers2 = {

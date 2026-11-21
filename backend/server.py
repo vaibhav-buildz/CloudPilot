@@ -82,36 +82,39 @@ def is_production() -> bool:
 
 
 
-def _check_rate_limit(client_ip: str, category: str) -> bool:
-    """Checks per-IP rate limit for a given endpoint category."""
+def _check_rate_limit(client_ip: str, category: str) -> Tuple[bool, int]:
+    """Checks per-IP rate limit for a given endpoint category. Returns (is_allowed, retry_after_sec)."""
     now = time.time()
     if category == "simulate":
         with _sim_rate_lock:
             recent = [t for t in _sim_rate_history.get(client_ip, []) if now - t < SIM_RATE_WINDOW]
             if len(recent) >= SIM_RATE_LIMIT:
                 _sim_rate_history[client_ip] = recent
-                return False
+                retry_after = max(1, int(SIM_RATE_WINDOW - (now - recent[0])) + 1)
+                return False, retry_after
             recent.append(now)
             _sim_rate_history[client_ip] = recent
-            return True
+            return True, 0
     elif category == "mutation":
         with _mutation_rate_lock:
             recent = [t for t in _mutation_rate_history.get(client_ip, []) if now - t < MUTATION_RATE_WINDOW]
             if len(recent) >= MUTATION_RATE_LIMIT:
                 _mutation_rate_history[client_ip] = recent
-                return False
+                retry_after = max(1, int(MUTATION_RATE_WINDOW - (now - recent[0])) + 1)
+                return False, retry_after
             recent.append(now)
             _mutation_rate_history[client_ip] = recent
-            return True
+            return True, 0
     else:
         with _general_rate_lock:
             recent = [t for t in _general_rate_history.get(client_ip, []) if now - t < GENERAL_RATE_WINDOW]
             if len(recent) >= GENERAL_RATE_LIMIT:
                 _general_rate_history[client_ip] = recent
-                return False
+                retry_after = max(1, int(GENERAL_RATE_WINDOW - (now - recent[0])) + 1)
+                return False, retry_after
             recent.append(now)
             _general_rate_history[client_ip] = recent
-            return True
+            return True, 0
 
 
 class PayloadTooLargeError(Exception):
@@ -498,9 +501,16 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-            if not _check_rate_limit(client_ip, "default"):
+            allowed, retry_after = _check_rate_limit(client_ip, "default")
+            if not allowed:
                 status = HTTPStatus.TOO_MANY_REQUESTS
-                self._send_error(status, "Rate limit exceeded. Try again shortly.", code="too_many_requests")
+                self._send_error(
+                    status,
+                    "Rate limit exceeded. Try again shortly.",
+                    code="too_many_requests",
+                    details={"retry_after_seconds": retry_after},
+                    extra_headers={"Retry-After": str(retry_after)},
+                )
                 return
 
             if path in ("/", "/index.html"):
@@ -568,7 +578,8 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
             else:
                 category = "write"
 
-            if not _check_rate_limit(client_ip, category):
+            allowed, retry_after = _check_rate_limit(client_ip, category)
+            if not allowed:
                 status = HTTPStatus.TOO_MANY_REQUESTS
                 if category == "simulate":
                     msg = "Rate limit exceeded. Max 10 simulations per minute."
@@ -576,7 +587,13 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
                     msg = "Rate limit exceeded. Max 5 cluster state mutations per minute."
                 else:
                     msg = "Rate limit exceeded. Try again shortly."
-                self._send_error(status, msg, code="too_many_requests")
+                self._send_error(
+                    status,
+                    msg,
+                    code="too_many_requests",
+                    details={"retry_after_seconds": retry_after},
+                    extra_headers={"Retry-After": str(retry_after)},
+                )
                 return
 
             # API key authentication on all write/simulate endpoints

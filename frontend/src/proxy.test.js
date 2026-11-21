@@ -108,11 +108,14 @@ describe('Vercel API Proxy (frontend/api/proxy.js)', () => {
       ['percent-encoded slash (%2f)', 'api%2fv1/cluster'],
       ['protocol-relative double slash (//)', '//evil.com/phish'],
       ['backslash (\\)', 'api\\v1\\cluster'],
+      ['null byte raw (\\0)', 'api/v1/cluster\0extra'],
+      ['null byte encoded (%00)', 'api/v1/cluster%00admin'],
       ['absolute URL (http)', 'http://evil.com/leak'],
       ['absolute URL (https)', 'https://evil.com/leak'],
     ];
 
-    test.each(invalidPaths)('rejects %s with 403', async (_, pathValue) => {
+    test.each(invalidPaths)('rejects %s with 403 before upstream fetch', async (_, pathValue) => {
+      global.fetch = vi.fn();
       const req = createMockReq({
         method: 'GET',
         query: { path: pathValue },
@@ -123,6 +126,7 @@ describe('Vercel API Proxy (frontend/api/proxy.js)', () => {
 
       expect(res.statusCode).toBe(403);
       expect(res.data.code).toBe('forbidden_path');
+      expect(global.fetch).not.toHaveBeenCalled();
     });
   });
 

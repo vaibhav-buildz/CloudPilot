@@ -46,8 +46,18 @@ describe('App Cold-Start Resilience and Store Status Warning', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
 
+    // Verify all aspects of waking UI
     const wakeupBanner = screen.getByText(/Backend is waking up \(Render free tier cold start may take 30–60s\)/i);
     expect(wakeupBanner).toBeTruthy();
+
+    const retryAttempt = screen.getByText(/Retrying \/health \(Attempt #1\)/i);
+    expect(retryAttempt).toBeTruthy();
+
+    const badge = screen.getByText(/Free-tier Spun Down \(Waking up\.\.\.\)/i);
+    expect(badge).toBeTruthy();
+
+    const retryBtn = screen.getByText(/Retry Now/i);
+    expect(retryBtn).toBeTruthy();
   });
 
   it('displays a visible warning banner when simulation returns store_status not saved', async () => {
