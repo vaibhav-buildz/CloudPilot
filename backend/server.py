@@ -367,6 +367,9 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
 
     def _drain_body(self) -> None:
         """Safely drain pending request body so socket teardown does not abort connection."""
+        if getattr(self, "_body_read", False):
+            return
+        self._body_read = True
         try:
             raw_len = self.headers.get("Content-Length", "0")
             length = int(raw_len)
@@ -442,6 +445,7 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
         return self._has_valid_api_key()
 
     def _read_json_body(self) -> Dict[str, Any]:
+        self._body_read = True
         raw_len = self.headers.get("Content-Length", "0")
         try:
             length = int(raw_len)
@@ -690,7 +694,10 @@ class CloudPilotRequestHandler(BaseHTTPRequestHandler):
             self._send_error(status, "Internal server error.", code="internal_error")
         finally:
             if acquired_sim:
-                SIM_SLOTS.release()
+                try:
+                    SIM_SLOTS.release()
+                except ValueError:
+                    pass
             self._log_json("POST", self.path, status, (time.perf_counter() - t0) * 1000.0, self.req_id, client_ip)
 
 
